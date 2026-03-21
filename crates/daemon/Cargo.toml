@@ -1,0 +1,25 @@
+[package]
+name    = "daemon"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "daemon"
+path = "src/main.rs"
+
+[dependencies]
+devwatch-core    = { path = "../core" }
+provider-github  = { path = "../providers/github" }
+provider-gitlab  = { path = "../providers/gitlab" }
+
+tokio            = { workspace = true }
+tokio-util       = { workspace = true }
+serde_json       = { workspace = true }
+anyhow           = { workspace = true }
+tracing          = { workspace = true }
+tracing-subscriber = { workspace = true }
+config           = { workspace = true }
+
+notify-rust      = "4"
+rusqlite         = { version = "0.31", features = ["bundled"] }
+dirs             = "5"

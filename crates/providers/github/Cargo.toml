@@ -1,0 +1,12 @@
+[package]
+name    = "provider-github"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+devwatch-core = { path = "../../core" }
+octocrab    = "0.41"
+tokio       = { workspace = true }
+async-trait = { workspace = true }
+anyhow      = { workspace = true }
+tracing     = { workspace = true }

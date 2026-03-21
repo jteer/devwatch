@@ -1,0 +1,9 @@
+[package]
+name    = "provider-gitlab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+devwatch-core = { path = "../../core" }
+async-trait = { workspace = true }
+anyhow      = { workspace = true }

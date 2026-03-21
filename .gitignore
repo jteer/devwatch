@@ -1,0 +1,7 @@
+/target/
+Cargo.lock
+
+# User config (contains tokens — never commit)
+config.toml
+config.local.toml
+*.local.toml

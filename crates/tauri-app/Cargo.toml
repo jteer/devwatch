@@ -1,0 +1,17 @@
+[package]
+name    = "tauri-app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "devwatch-app"
+path = "src/main.rs"
+
+[dependencies]
+devwatch-core = { path = "../core" }
+tokio      = { workspace = true }
+serde_json = { workspace = true }
+anyhow     = { workspace = true }
+
+# Phase 3 — uncomment when implementing
+# tauri = { version = "2", features = ["tray-icon"] }

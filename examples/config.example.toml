@@ -1,0 +1,15 @@
+daemon_port        = 7878
+poll_interval_secs = 60
+
+# Watch a GitHub repository.
+# Each repo needs a personal access token with `repo` scope.
+# You can set the token per-repo here, or export GITHUB_TOKEN in your shell.
+[[repos]]
+provider = "github"
+name     = "owner/my-repo"
+token    = "ghp_xxxxxxxxxxxxxxxxxxxx"
+
+# A second repo using the GITHUB_TOKEN environment variable instead.
+[[repos]]
+provider = "github"
+name     = "owner/another-repo"
