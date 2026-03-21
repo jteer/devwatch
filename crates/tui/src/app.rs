@@ -152,7 +152,7 @@ impl App {
             }
             VcsEvent::PullRequestClosed(pr) => {
                 self.push_log(format!(
-                    "clos PR #{} {}  [{}]",
+                    "closed PR #{} {}  [{}]",
                     pr.number, pr.title, pr.repo
                 ));
                 self.prs.retain(|p| !(p.number == pr.number && p.repo == pr.repo));

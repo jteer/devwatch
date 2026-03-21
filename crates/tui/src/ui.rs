@@ -87,7 +87,7 @@ fn render_event_log(frame: &mut Frame, app: &App, area: Rect) {
                 ("●", NEW_COLOR)
             } else if entry.message.starts_with("upd") {
                 ("◆", UPD_COLOR)
-            } else if entry.message.starts_with("clos") {
+            } else if entry.message.starts_with("closed") {
                 ("○", CLO_COLOR)
             } else {
                 ("·", DIM)
