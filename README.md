@@ -67,6 +67,8 @@ cargo build --workspace
 
 ## Run
 
+### Daemon only
+
 ```sh
 cargo run -p daemon
 ```
@@ -74,6 +76,21 @@ cargo run -p daemon
 With verbose logging:
 ```sh
 RUST_LOG=debug cargo run -p daemon
+```
+
+### TUI (terminal UI)
+
+```sh
+cargo run -p tui
+```
+
+The TUI will **auto-start the daemon** if it is not already running — no need
+to launch two terminals manually. It locates the `daemon` binary as a sibling
+of the `devwatch-tui` executable, or falls back to `daemon` on `PATH`.
+
+Debug logging (written to a file so it doesn't corrupt the terminal):
+```sh
+DEVWATCH_TUI_LOG=/tmp/tui.log cargo run -p tui
 ```
 
 ## IPC — interacting with the daemon manually

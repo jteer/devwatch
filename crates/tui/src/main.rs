@@ -1,23 +1,21 @@
 mod app;
+mod launch;
 mod ui;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, LinesCodec};
-use futures_util::StreamExt;
 
 use devwatch_core::ipc::{ClientMessage, DaemonMessage};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // ── Logging (to file so it doesn't corrupt the terminal) ─────────────────
-    // Tracing output is suppressed in TUI mode; set DEVWATCH_TUI_LOG to a file
-    // path to enable: DEVWATCH_TUI_LOG=/tmp/tui.log devwatch-tui
+    // Set DEVWATCH_TUI_LOG=/tmp/tui.log to enable file logging.
     if let Ok(log_path) = std::env::var("DEVWATCH_TUI_LOG") {
-        let file = std::fs::File::create(&log_path)
-            .with_context(|| format!("create log file {log_path}"))?;
+        let file = std::fs::File::create(&log_path)?;
         tracing_subscriber::fmt()
             .with_writer(std::sync::Mutex::new(file))
             .with_ansi(false)
@@ -27,11 +25,8 @@ async fn main() -> Result<()> {
     // ── Config ────────────────────────────────────────────────────────────────
     let port = load_port();
 
-    // ── Connect to daemon ─────────────────────────────────────────────────────
-    let addr = format!("127.0.0.1:{port}");
-    let stream = TcpStream::connect(&addr)
-        .await
-        .with_context(|| format!("cannot connect to daemon at {addr} — is it running?"))?;
+    // ── Connect (auto-starting daemon if not running) ─────────────────────────
+    let stream = launch::connect_or_start(port).await?;
 
     let (reader, mut writer) = stream.into_split();
     let mut framed_reader = FramedRead::new(reader, LinesCodec::new());
@@ -39,10 +34,7 @@ async fn main() -> Result<()> {
     // Subscribe immediately so the daemon queues events from the start.
     let mut subscribe_line = serde_json::to_string(&ClientMessage::Subscribe)?;
     subscribe_line.push('\n');
-    writer
-        .write_all(subscribe_line.as_bytes())
-        .await
-        .context("failed to send Subscribe")?;
+    writer.write_all(subscribe_line.as_bytes()).await?;
 
     // ── Daemon reader task ────────────────────────────────────────────────────
     let (daemon_tx, daemon_rx) = mpsc::channel::<DaemonMessage>(64);
