@@ -114,7 +114,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let keys = " ↑↓/jk navigate  Enter open URL  q quit";
 
     let (timer_text, timer_style) = {
-        let (elapsed, _) = app.poll_timer();
+        let (elapsed, interval) = app.poll_timer();
         if app.last_poll.is_none() {
             ("connecting…".to_string(), Style::new().fg(DIM))
         } else {
@@ -123,8 +123,10 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!("updated {}m {}s ago", elapsed / 60, elapsed % 60)
             };
-            let color = if elapsed < 30 { Color::Green }
-                        else if elapsed < 90 { Color::Yellow }
+            // Green while within the expected poll window,
+            // yellow once overdue, red if badly overdue (2× interval).
+            let color = if elapsed < interval { Color::Green }
+                        else if elapsed < interval * 2 { Color::Yellow }
                         else { Color::Red };
             (text, Style::new().fg(color))
         }

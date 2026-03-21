@@ -39,19 +39,10 @@ pub async fn connect_or_start(port: u16) -> Result<Connection> {
         }
     }
 
-    // Locate the daemon binary.
-    let bin = daemon_binary_path()?;
-    info!("spawning daemon from {}", bin.display());
-
-    // kill_on_drop(true): the daemon is killed automatically when the
-    // returned Child is dropped (i.e. when the TUI exits).
-    let child = tokio::process::Command::new(&bin)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("failed to spawn daemon at {}", bin.display()))?;
+    // Locate and spawn the daemon. In a Cargo workspace (dev) we use
+    // `cargo run -p daemon` so the binary is always rebuilt before launch.
+    // In a release/installed layout we run the sibling binary directly.
+    let child = spawn_daemon()?;
 
     // Retry with linear backoff for up to 3 seconds.
     let attempts = 15;
@@ -80,21 +71,62 @@ pub async fn connect_or_start(port: u16) -> Result<Connection> {
     ))
 }
 
-/// Find the daemon binary:
-/// 1. As a sibling of the current executable (installed / `cargo build` layout)
-/// 2. Literally `"daemon"` — let the OS resolve it via PATH
-fn daemon_binary_path() -> Result<PathBuf> {
+/// Spawn the daemon process and return the `Child` handle.
+///
+/// Strategy:
+/// 1. If we can find a `Cargo.toml` with `[workspace]` by walking up from the
+///    current working directory, we are in a dev/workspace layout — run
+///    `cargo run -p daemon` so the daemon binary is always freshly built.
+/// 2. Otherwise (installed layout) run the sibling binary directly.
+fn spawn_daemon() -> Result<Child> {
+    let mut cmd = if is_cargo_workspace() {
+        info!("workspace detected — spawning daemon via `cargo run -p daemon`");
+        let mut c = tokio::process::Command::new("cargo");
+        c.args(["run", "-p", "daemon"]);
+        c
+    } else {
+        let path = daemon_binary_path();
+        info!("spawning daemon binary at {}", path.display());
+        tokio::process::Command::new(path)
+    };
+
+    cmd.kill_on_drop(true)
+        .spawn()
+        .context("failed to spawn daemon process")
+}
+
+/// Walk up from the current working directory looking for a `Cargo.toml`
+/// that contains `[workspace]`.  Returns `true` when found.
+fn is_cargo_workspace() -> bool {
+    let Ok(mut dir) = std::env::current_dir() else { return false };
+    loop {
+        let candidate = dir.join("Cargo.toml");
+        if candidate.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&candidate) {
+                if contents.contains("[workspace]") {
+                    return true;
+                }
+            }
+        }
+        if !dir.pop() {
+            return false;
+        }
+    }
+}
+
+/// Find the daemon binary sibling of the current executable.
+fn daemon_binary_path() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         let sibling = exe
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("daemon");
         if sibling.exists() {
-            return Ok(sibling);
+            return sibling;
         }
     }
     // Fall back to PATH — will fail at spawn time with a clear OS error.
-    Ok(PathBuf::from("daemon"))
+    PathBuf::from("daemon")
 }
 
 fn is_connection_refused(e: &std::io::Error) -> bool {
