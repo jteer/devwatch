@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
@@ -40,28 +40,48 @@ pub struct App {
     pub table_state: TableState,
     pub status: ConnectionStatus,
     pub should_quit: bool,
+    /// When we last received a snapshot or event from the daemon.
+    pub last_poll: Option<Instant>,
+    /// Configured poll interval — used to compute the countdown.
+    pub poll_interval_secs: u64,
     daemon_rx: mpsc::Receiver<DaemonMessage>,
 }
 
 impl App {
-    pub fn new(daemon_rx: mpsc::Receiver<DaemonMessage>) -> Self {
+    pub fn new(daemon_rx: mpsc::Receiver<DaemonMessage>, poll_interval_secs: u64) -> Self {
         Self {
             prs: Vec::new(),
             log: VecDeque::with_capacity(MAX_LOG_ENTRIES),
             table_state: TableState::default(),
             status: ConnectionStatus::Connecting,
             should_quit: false,
+            last_poll: None,
+            poll_interval_secs,
             daemon_rx,
         }
     }
 
+    /// Returns `(elapsed_secs, interval_secs)` for the poll timer.
+    pub fn poll_timer(&self) -> (u64, u64) {
+        let elapsed = self.last_poll
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
+        (elapsed, self.poll_interval_secs)
+    }
+
     pub async fn run(mut self, mut terminal: ratatui::DefaultTerminal) -> Result<()> {
         let mut events = EventStream::new();
+        // Drive redraws every second so the poll countdown ticks in real time.
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             terminal.draw(|frame| crate::ui::draw(frame, &mut self))?;
 
             tokio::select! {
+                // 1-second tick — just triggers a redraw to update the timer.
+                _ = tick.tick() => {}
+
                 // Terminal key events
                 event = events.next() => {
                     match event {
@@ -107,6 +127,7 @@ impl App {
     }
 
     fn handle_daemon_msg(&mut self, msg: DaemonMessage) {
+        self.last_poll = Some(Instant::now());
         match msg {
             DaemonMessage::StateSnapshot { pull_requests } => {
                 self.prs = pull_requests;

@@ -1,8 +1,9 @@
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
+    symbols,
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, LineGauge, List, ListItem, Paragraph, Row, Table},
     Frame,
 };
 
@@ -16,15 +17,17 @@ const UPD_COLOR: Color = Color::Yellow;
 const CLO_COLOR: Color = Color::Red;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [table_area, log_area, status_area] = Layout::vertical([
+    let [table_area, log_area, timer_area, status_area] = Layout::vertical([
         Constraint::Min(6),
         Constraint::Length(8),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(frame.area());
 
     render_pr_table(frame, app, table_area);
     render_event_log(frame, app, log_area);
+    render_poll_timer(frame, app, timer_area);
     render_status_bar(frame, app, status_area);
 }
 
@@ -108,6 +111,29 @@ fn render_event_log(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     frame.render_widget(list, area);
+}
+
+fn render_poll_timer(frame: &mut Frame, app: &App, area: Rect) {
+    let (elapsed, interval) = app.poll_timer();
+
+    let (label, ratio, color) = if app.last_poll.is_none() {
+        ("waiting for first poll…".to_string(), 0.0, DIM)
+    } else if interval == 0 || elapsed >= interval {
+        ("polling…".to_string(), 1.0, Color::Yellow)
+    } else {
+        let remaining = interval - elapsed;
+        let ratio = elapsed as f64 / interval as f64;
+        let color = if ratio >= 0.75 { Color::Yellow } else { Color::Green };
+        (format!(" next poll in {remaining}s"), ratio, color)
+    };
+
+    let gauge = LineGauge::default()
+        .label(label)
+        .filled_style(Style::default().fg(color).bg(Color::DarkGray))
+        .line_set(symbols::line::THICK)
+        .ratio(ratio);
+
+    frame.render_widget(gauge, area);
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {

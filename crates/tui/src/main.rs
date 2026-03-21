@@ -55,19 +55,31 @@ async fn main() -> Result<()> {
     });
 
     // ── Run TUI ───────────────────────────────────────────────────────────────
+    let poll_interval_secs = load_poll_interval();
     let terminal = ratatui::init();
-    let result = app::App::new(daemon_rx).run(terminal).await;
+    let result = app::App::new(daemon_rx, poll_interval_secs).run(terminal).await;
     ratatui::restore();
 
     result
 }
 
 fn load_port() -> u16 {
-    config::Config::builder()
-        .add_source(config::File::with_name("config").required(false))
-        .add_source(config::Environment::with_prefix("DEVWATCH").separator("__"))
-        .build()
-        .and_then(|c| c.get_int("daemon_port"))
+    load_cfg()
+        .and_then(|c| c.get_int("daemon_port").map_err(Into::into))
         .map(|p| p as u16)
         .unwrap_or(7878)
+}
+
+fn load_poll_interval() -> u64 {
+    load_cfg()
+        .and_then(|c| c.get_int("poll_interval_secs").map_err(Into::into))
+        .map(|p| p as u64)
+        .unwrap_or(60)
+}
+
+fn load_cfg() -> anyhow::Result<config::Config> {
+    Ok(config::Config::builder()
+        .add_source(config::File::with_name("config").required(false))
+        .add_source(config::Environment::with_prefix("DEVWATCH").separator("__"))
+        .build()?)
 }
