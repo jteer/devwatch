@@ -1,9 +1,8 @@
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
-    symbols,
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, LineGauge, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table},
     Frame,
 };
 
@@ -17,17 +16,15 @@ const UPD_COLOR: Color = Color::Yellow;
 const CLO_COLOR: Color = Color::Red;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [table_area, log_area, timer_area, status_area] = Layout::vertical([
+    let [table_area, log_area, status_area] = Layout::vertical([
         Constraint::Min(6),
         Constraint::Length(8),
-        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(frame.area());
 
     render_pr_table(frame, app, table_area);
     render_event_log(frame, app, log_area);
-    render_poll_timer(frame, app, timer_area);
     render_status_bar(frame, app, status_area);
 }
 
@@ -113,47 +110,45 @@ fn render_event_log(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-fn render_poll_timer(frame: &mut Frame, app: &App, area: Rect) {
-    let (elapsed, interval) = app.poll_timer();
-
-    let (label, ratio, color) = if app.last_poll.is_none() {
-        ("waiting for first poll…".to_string(), 0.0, DIM)
-    } else if interval == 0 || elapsed >= interval {
-        ("polling…".to_string(), 1.0, Color::Yellow)
-    } else {
-        let remaining = interval - elapsed;
-        let ratio = elapsed as f64 / interval as f64;
-        let color = if ratio >= 0.75 { Color::Yellow } else { Color::Green };
-        (format!(" next poll in {remaining}s"), ratio, color)
-    };
-
-    let gauge = LineGauge::default()
-        .label(label)
-        .filled_style(Style::default().fg(color).bg(Color::DarkGray))
-        .line_set(symbols::line::THICK)
-        .ratio(ratio);
-
-    frame.render_widget(gauge, area);
-}
-
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let keys = " ↑↓/jk navigate  Enter open URL  q quit";
+
+    let (timer_text, timer_style) = {
+        let (elapsed, _) = app.poll_timer();
+        if app.last_poll.is_none() {
+            ("connecting…".to_string(), Style::new().fg(DIM))
+        } else {
+            let text = if elapsed < 60 {
+                format!("updated {elapsed}s ago")
+            } else {
+                format!("updated {}m {}s ago", elapsed / 60, elapsed % 60)
+            };
+            let color = if elapsed < 30 { Color::Green }
+                        else if elapsed < 90 { Color::Yellow }
+                        else { Color::Red };
+            (text, Style::new().fg(color))
+        }
+    };
+
     let conn_style = match app.status {
         ConnectionStatus::Connected    => Style::new().fg(Color::Green),
         ConnectionStatus::Connecting   => Style::new().fg(Color::Yellow),
         ConnectionStatus::Disconnected => Style::new().fg(Color::Red),
     };
 
-    let status_str = format!("{}  ", app.status);
-    // Pad keys to fill width, push status to the right.
-    let pad = area
-        .width
-        .saturating_sub(keys.len() as u16 + status_str.len() as u16);
-    let bar_text = format!("{keys}{:pad$}{status_str}", "", pad = pad as usize);
+    let right = format!("{}  ●  {}  ", timer_text, app.status);
+    let pad = (area.width as usize).saturating_sub(keys.len() + right.len());
+
+    // Split right into timer and conn spans at the bullet separator.
+    let bullet_pos = right.find('●').unwrap_or(right.len());
+    let timer_part = &right[..bullet_pos];
+    let conn_part  = &right[bullet_pos..];
 
     let bar = Paragraph::new(Line::from(vec![
-        Span::styled(&bar_text[..bar_text.len() - status_str.len()], Style::new().fg(DIM)),
-        Span::styled(&bar_text[bar_text.len() - status_str.len()..], conn_style),
+        Span::styled(keys, Style::new().fg(DIM)),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(timer_part, timer_style),
+        Span::styled(conn_part, conn_style),
     ]));
 
     frame.render_widget(bar, area);

@@ -5,21 +5,31 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use tokio::net::TcpStream;
+use tokio::process::Child;
 use tracing::{info, warn};
+
+/// Result of connecting to the daemon.
+pub struct Connection {
+    pub stream: TcpStream,
+    /// Present only when *this* TUI instance spawned the daemon.
+    /// Held with `kill_on_drop(true)` so the daemon is automatically
+    /// terminated when the TUI exits (the `App` drops this value).
+    pub owned_child: Option<Child>,
+}
 
 /// Connect to the daemon at `127.0.0.1:port`.
 ///
-/// If the connection is refused, the daemon binary is located and spawned
-/// as a background process, then connection is retried with backoff.
-/// Returns the connected `TcpStream` or an error with a clear message.
-pub async fn connect_or_start(port: u16) -> Result<TcpStream> {
+/// If the connection is refused, the daemon binary is located and spawned.
+/// Returns a `Connection` whose `owned_child` is `Some` only when we started
+/// the daemon — callers should keep it alive for the duration of the session.
+pub async fn connect_or_start(port: u16) -> Result<Connection> {
     let addr = format!("127.0.0.1:{port}");
 
     // Happy path: daemon is already running.
     match TcpStream::connect(&addr).await {
         Ok(stream) => {
-            info!("connected to daemon at {addr}");
-            return Ok(stream);
+            info!("connected to existing daemon at {addr}");
+            return Ok(Connection { stream, owned_child: None });
         }
         Err(e) if is_connection_refused(&e) => {
             info!("daemon not running, attempting to start it");
@@ -33,12 +43,13 @@ pub async fn connect_or_start(port: u16) -> Result<TcpStream> {
     let bin = daemon_binary_path()?;
     info!("spawning daemon from {}", bin.display());
 
-    tokio::process::Command::new(&bin)
+    // kill_on_drop(true): the daemon is killed automatically when the
+    // returned Child is dropped (i.e. when the TUI exits).
+    let child = tokio::process::Command::new(&bin)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        // Detach from this process so it keeps running after the TUI exits.
-        .kill_on_drop(false)
+        .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("failed to spawn daemon at {}", bin.display()))?;
 
@@ -51,7 +62,7 @@ pub async fn connect_or_start(port: u16) -> Result<TcpStream> {
         match TcpStream::connect(&addr).await {
             Ok(stream) => {
                 info!("daemon ready after {attempt} attempt(s)");
-                return Ok(stream);
+                return Ok(Connection { stream, owned_child: Some(child) });
             }
             Err(e) if is_connection_refused(&e) => {
                 warn!("attempt {attempt}/{attempts}: daemon not ready yet");

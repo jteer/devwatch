@@ -26,9 +26,9 @@ async fn main() -> Result<()> {
     let port = load_port();
 
     // ── Connect (auto-starting daemon if not running) ─────────────────────────
-    let stream = launch::connect_or_start(port).await?;
+    let conn = launch::connect_or_start(port).await?;
 
-    let (reader, mut writer) = stream.into_split();
+    let (reader, mut writer) = conn.stream.into_split();
     let mut framed_reader = FramedRead::new(reader, LinesCodec::new());
 
     // Subscribe immediately so the daemon queues events from the start.
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
     // ── Run TUI ───────────────────────────────────────────────────────────────
     let poll_interval_secs = load_poll_interval();
     let terminal = ratatui::init();
-    let result = app::App::new(daemon_rx, poll_interval_secs).run(terminal).await;
+    let result = app::App::new(daemon_rx, poll_interval_secs, conn.owned_child).run(terminal).await;
     ratatui::restore();
 
     result

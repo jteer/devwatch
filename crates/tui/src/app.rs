@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 
 use devwatch_core::ipc::DaemonMessage;
 use devwatch_core::types::{PullRequest, VcsEvent};
+use tokio::process::Child;
 
 const MAX_LOG_ENTRIES: usize = 100;
 
@@ -44,11 +45,18 @@ pub struct App {
     pub last_poll: Option<Instant>,
     /// Configured poll interval — used to compute the countdown.
     pub poll_interval_secs: u64,
+    /// Child process handle when this TUI spawned the daemon.
+    /// Kept alive here so `kill_on_drop(true)` fires on TUI exit.
+    _daemon_child: Option<Child>,
     daemon_rx: mpsc::Receiver<DaemonMessage>,
 }
 
 impl App {
-    pub fn new(daemon_rx: mpsc::Receiver<DaemonMessage>, poll_interval_secs: u64) -> Self {
+    pub fn new(
+        daemon_rx: mpsc::Receiver<DaemonMessage>,
+        poll_interval_secs: u64,
+        daemon_child: Option<Child>,
+    ) -> Self {
         Self {
             prs: Vec::new(),
             log: VecDeque::with_capacity(MAX_LOG_ENTRIES),
@@ -57,16 +65,18 @@ impl App {
             should_quit: false,
             last_poll: None,
             poll_interval_secs,
+            _daemon_child: daemon_child,
             daemon_rx,
         }
     }
 
     /// Returns `(elapsed_secs, interval_secs)` for the poll timer.
+    /// `elapsed` counts up from the last received Polled heartbeat or initial snapshot.
     pub fn poll_timer(&self) -> (u64, u64) {
         let elapsed = self.last_poll
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(0);
-        (elapsed, self.poll_interval_secs)
+        (elapsed, self.poll_interval_secs) // interval kept for potential future use
     }
 
     pub async fn run(mut self, mut terminal: ratatui::DefaultTerminal) -> Result<()> {
@@ -127,11 +137,19 @@ impl App {
     }
 
     fn handle_daemon_msg(&mut self, msg: DaemonMessage) {
-        self.last_poll = Some(Instant::now());
         match msg {
+            DaemonMessage::Polled => {
+                // Daemon completed a poll cycle — reset the countdown.
+                self.last_poll = Some(Instant::now());
+                return;
+            }
             DaemonMessage::StateSnapshot { pull_requests } => {
                 self.prs = pull_requests;
                 self.status = ConnectionStatus::Connected;
+                // Seed the timer on connect so the countdown starts immediately.
+                if self.last_poll.is_none() {
+                    self.last_poll = Some(Instant::now());
+                }
                 self.push_log(format!("snapshot: {} open PRs", self.prs.len()));
                 // Select first row if nothing is selected yet.
                 if !self.prs.is_empty() && self.table_state.selected().is_none() {

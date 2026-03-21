@@ -7,14 +7,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use devwatch_core::ipc::{ClientMessage, DaemonMessage};
-use devwatch_core::types::VcsEvent;
 
 use crate::state::DaemonState;
 
 pub async fn run_server(
     port: u16,
     state: Arc<Mutex<DaemonState>>,
-    event_tx: broadcast::Sender<VcsEvent>,
+    event_tx: broadcast::Sender<DaemonMessage>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
     let addr = format!("127.0.0.1:{port}");
@@ -52,7 +51,7 @@ pub async fn run_server(
 async fn handle_client(
     stream: TcpStream,
     state: Arc<Mutex<DaemonState>>,
-    mut event_rx: broadcast::Receiver<VcsEvent>,
+    mut event_rx: broadcast::Receiver<DaemonMessage>,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
     let (reader, mut writer) = stream.into_split();
@@ -94,11 +93,11 @@ async fn handle_client(
                 }
             }
 
-            // Forward live events to subscribed clients.
+            // Forward live messages to subscribed clients.
             result = event_rx.recv(), if subscribed => {
                 match result {
-                    Ok(event) => {
-                        write_msg(&mut writer, &DaemonMessage::Event(event)).await?;
+                    Ok(msg) => {
+                        write_msg(&mut writer, &msg).await?;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!("server rx lagged, missed {n} events");

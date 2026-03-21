@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use devwatch_core::{AppConfig, VcsEvent, VcsProvider};
+use devwatch_core::{ipc::DaemonMessage, AppConfig, VcsProvider};
 use poller::ProviderEntry;
 use state::DaemonState;
 use store::Store;
@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
 
     // ── Broadcast channel ─────────────────────────────────────────────────────
     // Capacity: hold up to 256 events before slow receivers lag.
-    let (event_tx, _) = broadcast::channel::<VcsEvent>(256);
+    let (event_tx, _) = broadcast::channel::<DaemonMessage>(256);
 
     // ── Cancellation ──────────────────────────────────────────────────────────
     let cancel = CancellationToken::new();
