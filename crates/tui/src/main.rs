@@ -1,23 +1,81 @@
-//! Phase 2 — ratatui TUI client (not yet implemented).
-//!
-//! Implementation outline:
-//!
-//! 1. Connect via `tokio::net::TcpStream` to `127.0.0.1:{daemon_port}`.
-//! 2. Use `tokio_util::codec::LinesCodec` for newline-delimited JSON framing
-//!    (same as the daemon server — no extra protocol negotiation).
-//! 3. Send `ClientMessage::Subscribe` → receive `DaemonMessage::StateSnapshot`,
-//!    then stream `DaemonMessage::Event` messages.
-//! 4. Initialise ratatui: `ratatui::init()` / `ratatui::restore()`.
-//! 5. Main loop via `tokio::select!` between:
-//!    - `crossterm::event::EventStream` for keyboard input
-//!    - daemon message channel for live PR updates
-//! 6. Layout:
-//!    - Top pane:    PR list using `ratatui::widgets::Table`
-//!    - Bottom pane: Recent event log using `ratatui::widgets::List`
-//! 7. Key bindings: `q` to quit, `↑`/`↓` to navigate, `Enter` to open PR URL.
+mod app;
+mod ui;
 
-fn main() {
-    // TODO: Phase 2 — implement TUI client
-    eprintln!("devwatch TUI is not yet implemented (Phase 2).");
-    std::process::exit(1);
+use anyhow::{Context, Result};
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
+use tokio_util::codec::{FramedRead, LinesCodec};
+use futures_util::StreamExt;
+
+use devwatch_core::ipc::{ClientMessage, DaemonMessage};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    // ── Logging (to file so it doesn't corrupt the terminal) ─────────────────
+    // Tracing output is suppressed in TUI mode; set DEVWATCH_TUI_LOG to a file
+    // path to enable: DEVWATCH_TUI_LOG=/tmp/tui.log devwatch-tui
+    if let Ok(log_path) = std::env::var("DEVWATCH_TUI_LOG") {
+        let file = std::fs::File::create(&log_path)
+            .with_context(|| format!("create log file {log_path}"))?;
+        tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .init();
+    }
+
+    // ── Config ────────────────────────────────────────────────────────────────
+    let port = load_port();
+
+    // ── Connect to daemon ─────────────────────────────────────────────────────
+    let addr = format!("127.0.0.1:{port}");
+    let stream = TcpStream::connect(&addr)
+        .await
+        .with_context(|| format!("cannot connect to daemon at {addr} — is it running?"))?;
+
+    let (reader, mut writer) = stream.into_split();
+    let mut framed_reader = FramedRead::new(reader, LinesCodec::new());
+
+    // Subscribe immediately so the daemon queues events from the start.
+    let mut subscribe_line = serde_json::to_string(&ClientMessage::Subscribe)?;
+    subscribe_line.push('\n');
+    writer
+        .write_all(subscribe_line.as_bytes())
+        .await
+        .context("failed to send Subscribe")?;
+
+    // ── Daemon reader task ────────────────────────────────────────────────────
+    let (daemon_tx, daemon_rx) = mpsc::channel::<DaemonMessage>(64);
+
+    tokio::spawn(async move {
+        while let Some(result) = framed_reader.next().await {
+            match result {
+                Ok(line) => {
+                    if let Ok(msg) = serde_json::from_str::<DaemonMessage>(&line) {
+                        if daemon_tx.send(msg).await.is_err() {
+                            break; // TUI exited
+                        }
+                    }
+                }
+                Err(_) => break, // daemon closed
+            }
+        }
+    });
+
+    // ── Run TUI ───────────────────────────────────────────────────────────────
+    let terminal = ratatui::init();
+    let result = app::App::new(daemon_rx).run(terminal).await;
+    ratatui::restore();
+
+    result
+}
+
+fn load_port() -> u16 {
+    config::Config::builder()
+        .add_source(config::File::with_name("config").required(false))
+        .add_source(config::Environment::with_prefix("DEVWATCH").separator("__"))
+        .build()
+        .and_then(|c| c.get_int("daemon_port"))
+        .map(|p| p as u16)
+        .unwrap_or(7878)
 }
