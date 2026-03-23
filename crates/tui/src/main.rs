@@ -1,6 +1,7 @@
 mod app;
 mod config_editor;
 mod launch;
+mod settings;
 mod ui;
 
 use std::path::PathBuf;
@@ -33,7 +34,11 @@ async fn main() -> Result<()> {
     // ── Demo mode: skip daemon entirely ───────────────────────────────────────
     if demo_mode {
         let terminal = ratatui::init();
-        let result = app::App::demo(cfg, config_path).run(terminal).await;
+        let mut app = app::App::demo(cfg, config_path);
+        if let Some(order) = settings::load_column_order() {
+            app.column_order = order;
+        }
+        let result = app.run(terminal).await;
         ratatui::restore();
         return result;
     }
@@ -70,7 +75,11 @@ async fn main() -> Result<()> {
 
     // ── Run TUI ───────────────────────────────────────────────────────────────
     let terminal = ratatui::init();
-    let result = app::App::new(daemon_rx, conn.owned_child, cfg, config_path).run(terminal).await;
+    let mut app = app::App::new(daemon_rx, conn.owned_child, cfg, config_path);
+    if let Some(order) = settings::load_column_order() {
+        app.column_order = order;
+    }
+    let result = app.run(terminal).await;
     ratatui::restore();
 
     result

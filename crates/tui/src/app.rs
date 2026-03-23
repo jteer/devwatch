@@ -284,7 +284,10 @@ impl App {
                             if let AppMode::ReorderColumns { cursor: c } = &mut self.mode { *c += 1; }
                         }
                     }
-                    KeyCode::Esc | KeyCode::Char('o') => self.mode = AppMode::Normal,
+                    KeyCode::Esc | KeyCode::Char('o') => {
+                        let _ = crate::settings::save_column_order(&self.column_order);
+                        self.mode = AppMode::Normal;
+                    }
                     _ => {}
                 }
             }
