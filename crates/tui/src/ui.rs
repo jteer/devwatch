@@ -214,9 +214,9 @@ fn render_event_log(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let keys = match &app.mode {
-        AppMode::Config(_)            => " ↑↓/jk navigate  Enter edit  Tab next field  a add  d delete  s save  Esc back",
-        AppMode::ReorderColumns { .. } => " ←→/hl select column  H/L move column  Esc done",
-        AppMode::Normal               => " ↑↓/jk navigate  Enter open URL  o reorder cols  c config  q quit",
+        AppMode::Config(_)            => " ↑↓/jk navigate  │  Enter edit  │  Tab next field  │  a add  │  d delete  │  s save  │  Esc back",
+        AppMode::ReorderColumns { .. } => " ←→/hl select column  │  H/L move column  │  Esc done",
+        AppMode::Normal               => " ↑↓/jk navigate  │  Enter open URL  │  o reorder cols  │  c config  │  q quit",
     };
 
     let (timer_text, timer_style) = match app.event_timer() {
