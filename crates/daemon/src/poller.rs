@@ -30,10 +30,9 @@ pub async fn poll_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                let _ = event_tx.send(DaemonMessage::PollingStarted);
                 poll_all(&entries, &state, &store, &event_tx).await;
-                // Always broadcast Polled so clients can reset their countdown,
-                // even when no PRs changed this cycle.
-                let _ = event_tx.send(DaemonMessage::Polled);
+                let _ = event_tx.send(DaemonMessage::PollingFinished);
             }
             _ = cancel.cancelled() => {
                 info!("poller shutting down");

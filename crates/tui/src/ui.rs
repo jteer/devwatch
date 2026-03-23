@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
@@ -113,35 +115,30 @@ fn render_event_log(frame: &mut Frame, app: &App, area: Rect) {
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let keys = " ↑↓/jk navigate  Enter open URL  q quit";
 
-    let (timer_text, timer_style) = {
-        let (elapsed, interval) = app.poll_timer();
-        if app.last_poll.is_none() {
-            ("connecting…".to_string(), Style::new().fg(DIM))
-        } else {
-            let text = if elapsed < 60 {
-                format!("updated {elapsed}s ago")
-            } else {
-                format!("updated {}m {}s ago", elapsed / 60, elapsed % 60)
-            };
-            // Green while within the expected poll window,
-            // yellow once overdue, red if badly overdue (2× interval).
-            let color = if elapsed < interval { Color::Green }
-                        else if elapsed < interval * 2 { Color::Yellow }
-                        else { Color::Red };
-            (text, Style::new().fg(color))
-        }
+    // Timer: seconds since the last real VCS event.
+    let (timer_text, timer_style) = match app.event_timer() {
+        None => ("no events yet".to_string(), Style::new().fg(DIM)),
+        Some(s) if s < 60 => (format!("last event {s}s ago"), Style::new()),
+        Some(s) => (format!("last event {}m {}s ago", s / 60, s % 60), Style::new()),
     };
 
-    let conn_style = match app.status {
-        ConnectionStatus::Connected    => Style::new().fg(Color::Green),
-        ConnectionStatus::Connecting   => Style::new().fg(Color::Yellow),
-        ConnectionStatus::Disconnected => Style::new().fg(Color::Red),
+    // Status: "Polling…" for 2s after each cycle starts, otherwise connection state.
+    let is_polling = app.polling_until.map(|t| Instant::now() < t).unwrap_or(false);
+    let (status_text, conn_style) = if is_polling {
+        ("Polling…".to_string(), Style::new().fg(Color::Yellow))
+    } else {
+        let style = match app.status {
+            ConnectionStatus::Connected    => Style::new().fg(Color::Green),
+            ConnectionStatus::Connecting   => Style::new().fg(Color::Yellow),
+            ConnectionStatus::Disconnected => Style::new().fg(Color::Red),
+        };
+        (app.status.to_string(), style)
     };
 
-    let right = format!("{}  ●  {}  ", timer_text, app.status);
+    let right = format!("{}  ●  {}  ", timer_text, status_text);
     let pad = (area.width as usize).saturating_sub(keys.len() + right.len());
 
-    // Split right into timer and conn spans at the bullet separator.
+    // Split right into timer and status spans at the bullet separator.
     let bullet_pos = right.find('●').unwrap_or(right.len());
     let timer_part = &right[..bullet_pos];
     let conn_part  = &right[bullet_pos..];

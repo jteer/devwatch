@@ -41,10 +41,11 @@ pub struct App {
     pub table_state: TableState,
     pub status: ConnectionStatus,
     pub should_quit: bool,
-    /// When we last received a snapshot or event from the daemon.
-    pub last_poll: Option<Instant>,
-    /// Configured poll interval — used to compute the countdown.
-    pub poll_interval_secs: u64,
+    /// When the last real VCS event (new/updated/closed PR) was received.
+    pub last_event: Option<Instant>,
+    /// Show "Polling…" in the status bar until this instant.
+    /// Set to `now + 2s` on PollingStarted so even fast polls stay visible.
+    pub polling_until: Option<Instant>,
     /// Child process handle when this TUI spawned the daemon.
     /// Kept alive here so `kill_on_drop(true)` fires on TUI exit.
     _daemon_child: Option<Child>,
@@ -54,7 +55,6 @@ pub struct App {
 impl App {
     pub fn new(
         daemon_rx: mpsc::Receiver<DaemonMessage>,
-        poll_interval_secs: u64,
         daemon_child: Option<Child>,
     ) -> Self {
         Self {
@@ -63,20 +63,16 @@ impl App {
             table_state: TableState::default(),
             status: ConnectionStatus::Connecting,
             should_quit: false,
-            last_poll: None,
-            poll_interval_secs,
+            last_event: None,
+            polling_until: None,
             _daemon_child: daemon_child,
             daemon_rx,
         }
     }
 
-    /// Returns `(elapsed_secs, interval_secs)` for the poll timer.
-    /// `elapsed` counts up from the last received Polled heartbeat or initial snapshot.
-    pub fn poll_timer(&self) -> (u64, u64) {
-        let elapsed = self.last_poll
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
-        (elapsed, self.poll_interval_secs) // interval kept for potential future use
+    /// Seconds elapsed since the last real VCS event, or `None` if none received yet.
+    pub fn event_timer(&self) -> Option<u64> {
+        self.last_event.map(|t| t.elapsed().as_secs())
     }
 
     pub async fn run(mut self, mut terminal: ratatui::DefaultTerminal) -> Result<()> {
@@ -138,25 +134,24 @@ impl App {
 
     fn handle_daemon_msg(&mut self, msg: DaemonMessage) {
         match msg {
-            DaemonMessage::Polled => {
-                // Daemon completed a poll cycle — reset the countdown.
-                self.last_poll = Some(Instant::now());
-                return;
+            DaemonMessage::PollingStarted => {
+                // Keep "Polling…" visible for at least 2s so it's never missed.
+                self.polling_until = Some(Instant::now() + Duration::from_secs(2));
             }
+            DaemonMessage::PollingFinished => {}
             DaemonMessage::StateSnapshot { pull_requests } => {
                 self.prs = pull_requests;
                 self.status = ConnectionStatus::Connected;
-                // Seed the timer on connect so the countdown starts immediately.
-                if self.last_poll.is_none() {
-                    self.last_poll = Some(Instant::now());
-                }
                 self.push_log(format!("snapshot: {} open PRs", self.prs.len()));
                 // Select first row if nothing is selected yet.
                 if !self.prs.is_empty() && self.table_state.selected().is_none() {
                     self.table_state.select(Some(0));
                 }
             }
-            DaemonMessage::Event(event) => self.handle_vcs_event(event),
+            DaemonMessage::Event(event) => {
+                self.last_event = Some(Instant::now());
+                self.handle_vcs_event(event);
+            }
             DaemonMessage::Error { message } => {
                 self.push_log(format!("error: {message}"));
             }
