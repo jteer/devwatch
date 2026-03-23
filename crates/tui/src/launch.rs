@@ -42,11 +42,15 @@ pub async fn connect_or_start(port: u16) -> Result<Connection> {
     // Locate and spawn the daemon. In a Cargo workspace (dev) we use
     // `cargo run -p daemon` so the binary is always rebuilt before launch.
     // In a release/installed layout we run the sibling binary directly.
-    let child = spawn_daemon()?;
+    let (child, in_workspace) = spawn_daemon()?;
 
-    // Retry with linear backoff for up to 3 seconds.
-    let attempts = 15;
-    let delay    = Duration::from_millis(200);
+    // In workspace mode `cargo run` may need to compile first — allow up to
+    // 120 s.  For a pre-built binary 5 s is more than enough.
+    let (attempts, delay) = if in_workspace {
+        (600, Duration::from_millis(200)) // 120 s
+    } else {
+        (25,  Duration::from_millis(200)) // 5 s
+    };
 
     for attempt in 1..=attempts {
         tokio::time::sleep(delay).await;
@@ -56,7 +60,9 @@ pub async fn connect_or_start(port: u16) -> Result<Connection> {
                 return Ok(Connection { stream, owned_child: Some(child) });
             }
             Err(e) if is_connection_refused(&e) => {
-                warn!("attempt {attempt}/{attempts}: daemon not ready yet");
+                if attempt % 10 == 0 {
+                    warn!("attempt {attempt}/{attempts}: daemon not ready yet");
+                }
             }
             Err(e) => {
                 return Err(e).with_context(|| format!("unexpected error connecting to {addr}"));
@@ -67,19 +73,18 @@ pub async fn connect_or_start(port: u16) -> Result<Connection> {
     Err(anyhow!(
         "daemon did not become ready within {}s\n\
          Try running it manually: cargo run -p daemon",
-        attempts as f32 * delay.as_secs_f32()
+        attempts as u64 * delay.as_millis() as u64 / 1000
     ))
 }
 
-/// Spawn the daemon process and return the `Child` handle.
+/// Spawn the daemon process.
 ///
-/// Strategy:
-/// 1. If we can find a `Cargo.toml` with `[workspace]` by walking up from the
-///    current working directory, we are in a dev/workspace layout — run
-///    `cargo run -p daemon` so the daemon binary is always freshly built.
-/// 2. Otherwise (installed layout) run the sibling binary directly.
-fn spawn_daemon() -> Result<Child> {
-    let mut cmd = if is_cargo_workspace() {
+/// Returns `(child, in_workspace)`.  `in_workspace` is `true` when the daemon
+/// was started via `cargo run` (may need to compile) so the caller can use a
+/// longer connection-retry timeout.
+fn spawn_daemon() -> Result<(Child, bool)> {
+    let workspace = is_cargo_workspace();
+    let mut cmd = if workspace {
         info!("workspace detected — spawning daemon via `cargo run -p daemon`");
         let mut c = tokio::process::Command::new("cargo");
         c.args(["run", "-p", "daemon"]);
@@ -90,9 +95,11 @@ fn spawn_daemon() -> Result<Child> {
         tokio::process::Command::new(path)
     };
 
-    cmd.kill_on_drop(true)
+    let child = cmd
+        .kill_on_drop(true)
         .spawn()
-        .context("failed to spawn daemon process")
+        .context("failed to spawn daemon process")?;
+    Ok((child, workspace))
 }
 
 /// Walk up from the current working directory looking for a `Cargo.toml`
