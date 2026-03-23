@@ -13,6 +13,10 @@ pub struct PullRequest {
     pub repo: String,
     /// "github" or "gitlab"
     pub provider: String,
+    /// Unix timestamp of when the PR was created; 0 = unknown.
+    pub created_at: u64,
+    /// True if this is a draft / work-in-progress PR.
+    pub draft: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
