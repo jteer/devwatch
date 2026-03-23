@@ -1,6 +1,6 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     /// TCP port the daemon listens on (default: 7878)
     #[serde(default = "default_port")]
@@ -13,7 +13,7 @@ pub struct AppConfig {
     pub repos: Vec<RepoConfig>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RepoConfig {
     /// "github" or "gitlab"
     pub provider: String,
@@ -22,6 +22,7 @@ pub struct RepoConfig {
     pub name: String,
 
     /// Per-repo PAT; falls back to the provider-level token if omitted
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
 }
 

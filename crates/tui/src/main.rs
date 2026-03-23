@@ -1,6 +1,9 @@
 mod app;
+mod config_editor;
 mod launch;
 mod ui;
+
+use std::path::PathBuf;
 
 use anyhow::Result;
 use futures_util::StreamExt;
@@ -8,12 +11,12 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, LinesCodec};
 
+use devwatch_core::config::AppConfig;
 use devwatch_core::ipc::{ClientMessage, DaemonMessage};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // ── Logging (to file so it doesn't corrupt the terminal) ─────────────────
-    // Set DEVWATCH_TUI_LOG=/tmp/tui.log to enable file logging.
     if let Ok(log_path) = std::env::var("DEVWATCH_TUI_LOG") {
         let file = std::fs::File::create(&log_path)?;
         tracing_subscriber::fmt()
@@ -22,10 +25,21 @@ async fn main() -> Result<()> {
             .init();
     }
 
+    let demo_mode = std::env::args().any(|a| a == "--demo");
+
     // ── Config ────────────────────────────────────────────────────────────────
-    let port = load_port();
+    let (cfg, config_path) = load_cfg_with_path();
+
+    // ── Demo mode: skip daemon entirely ───────────────────────────────────────
+    if demo_mode {
+        let terminal = ratatui::init();
+        let result = app::App::demo(cfg, config_path).run(terminal).await;
+        ratatui::restore();
+        return result;
+    }
 
     // ── Connect (auto-starting daemon if not running) ─────────────────────────
+    let port = cfg.daemon_port;
     let conn = launch::connect_or_start(port).await?;
 
     let (reader, mut writer) = conn.stream.into_split();
@@ -45,33 +59,35 @@ async fn main() -> Result<()> {
                 Ok(line) => {
                     if let Ok(msg) = serde_json::from_str::<DaemonMessage>(&line) {
                         if daemon_tx.send(msg).await.is_err() {
-                            break; // TUI exited
+                            break;
                         }
                     }
                 }
-                Err(_) => break, // daemon closed
+                Err(_) => break,
             }
         }
     });
 
     // ── Run TUI ───────────────────────────────────────────────────────────────
     let terminal = ratatui::init();
-    let result = app::App::new(daemon_rx, conn.owned_child).run(terminal).await;
+    let result = app::App::new(daemon_rx, conn.owned_child, cfg, config_path).run(terminal).await;
     ratatui::restore();
 
     result
 }
 
-fn load_port() -> u16 {
-    load_cfg()
-        .and_then(|c| c.get_int("daemon_port").map_err(Into::into))
-        .map(|p| p as u16)
-        .unwrap_or(7878)
-}
-
-fn load_cfg() -> anyhow::Result<config::Config> {
-    Ok(config::Config::builder()
+/// Returns the loaded config and the path it was / should be written to.
+fn load_cfg_with_path() -> (AppConfig, PathBuf) {
+    let config_path = PathBuf::from("config.toml");
+    let cfg = config::Config::builder()
         .add_source(config::File::with_name("config").required(false))
         .add_source(config::Environment::with_prefix("DEVWATCH").separator("__"))
-        .build()?)
+        .build()
+        .and_then(|c| c.try_deserialize::<AppConfig>())
+        .unwrap_or_else(|_| AppConfig {
+            daemon_port: 7878,
+            poll_interval_secs: 60,
+            repos: vec![],
+        });
+    (cfg, config_path)
 }
