@@ -286,10 +286,15 @@ fn render_cfg_repos(frame: &mut Frame, editor: &mut ConfigEditor, area: Rect) {
             };
             let token_span = {
                 let active = selected && repo.editing == Some(RepoField::Token);
-                let display = if repo.token_buf.is_empty() && !active {
+                let display = if active {
+                    // Show plaintext while the user is actively typing.
+                    field_value(&repo.token_buf, true)
+                } else if repo.token_buf.is_empty() {
                     "(no token — uses env)".to_string()
                 } else {
-                    field_value(&repo.token_buf, active)
+                    // Mask stored tokens; show a fixed-width star string so
+                    // length gives no hint about the real value.
+                    "••••••••••••••••".to_string()
                 };
                 Span::styled(
                     display,
