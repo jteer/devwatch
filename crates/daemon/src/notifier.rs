@@ -2,17 +2,19 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+use devwatch_core::ipc::DaemonMessage;
 use devwatch_core::types::VcsEvent;
 
 pub async fn notify_loop(
-    mut event_rx: broadcast::Receiver<VcsEvent>,
+    mut event_rx: broadcast::Receiver<DaemonMessage>,
     cancel: CancellationToken,
 ) {
     loop {
         tokio::select! {
             result = event_rx.recv() => {
                 match result {
-                    Ok(event) => send_notification(&event),
+                    Ok(DaemonMessage::Event(event)) => send_notification(&event),
+                    Ok(_) => {} // Polled, Pong, etc. — nothing to notify
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!("notifier lagged, missed {n} events");
                     }

@@ -11,6 +11,10 @@ pub enum DaemonMessage {
     Event(VcsEvent),
     /// Full snapshot of currently-tracked pull requests.
     StateSnapshot { pull_requests: Vec<PullRequest> },
+    /// Daemon is beginning a poll cycle.
+    PollingStarted,
+    /// Daemon completed a poll cycle.
+    PollingFinished,
     /// An error the daemon wants to surface to the client.
     Error { message: String },
     /// Response to a client Ping.

@@ -1,6 +1,6 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     /// TCP port the daemon listens on (default: 7878)
     #[serde(default = "default_port")]
@@ -11,9 +11,13 @@ pub struct AppConfig {
     pub poll_interval_secs: u64,
 
     pub repos: Vec<RepoConfig>,
+
+    /// UI colour theme: "dark" | "light" | "high-contrast" (default: "dark")
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RepoConfig {
     /// "github" or "gitlab"
     pub provider: String,
@@ -22,6 +26,7 @@ pub struct RepoConfig {
     pub name: String,
 
     /// Per-repo PAT; falls back to the provider-level token if omitted
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
 }
 
@@ -31,4 +36,8 @@ fn default_port() -> u16 {
 
 fn default_interval() -> u64 {
     60
+}
+
+fn default_theme() -> String {
+    "dark".to_string()
 }

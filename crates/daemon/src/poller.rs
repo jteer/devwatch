@@ -5,7 +5,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use devwatch_core::{config::RepoConfig, provider::VcsProvider, types::VcsEvent};
+use devwatch_core::{config::RepoConfig, ipc::DaemonMessage, provider::VcsProvider, types::VcsEvent};
 
 use crate::state::DaemonState;
 use crate::store::Store;
@@ -19,7 +19,7 @@ pub async fn poll_loop(
     entries: Arc<Vec<ProviderEntry>>,
     state: Arc<Mutex<DaemonState>>,
     store: Arc<Mutex<Store>>,
-    event_tx: broadcast::Sender<VcsEvent>,
+    event_tx: broadcast::Sender<DaemonMessage>,
     interval_secs: u64,
     cancel: CancellationToken,
 ) {
@@ -30,7 +30,9 @@ pub async fn poll_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                let _ = event_tx.send(DaemonMessage::PollingStarted);
                 poll_all(&entries, &state, &store, &event_tx).await;
+                let _ = event_tx.send(DaemonMessage::PollingFinished);
             }
             _ = cancel.cancelled() => {
                 info!("poller shutting down");
@@ -44,7 +46,7 @@ async fn poll_all(
     entries: &[ProviderEntry],
     state: &Mutex<DaemonState>,
     store: &Mutex<Store>,
-    event_tx: &broadcast::Sender<VcsEvent>,
+    event_tx: &broadcast::Sender<DaemonMessage>,
 ) {
     for entry in entries {
         match entry.provider.get_pull_requests(&entry.repo).await {
@@ -83,7 +85,7 @@ async fn poll_all(
 
                 // Broadcast events to connected clients.
                 for event in events {
-                    let _ = event_tx.send(event);
+                    let _ = event_tx.send(DaemonMessage::Event(event));
                 }
             }
         }

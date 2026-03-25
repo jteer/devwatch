@@ -50,14 +50,28 @@ impl VcsProvider for GithubProvider {
                     None => "unknown".to_string(),
                 };
                 PullRequest {
-                    id:       pr.id.0,
-                    number:   pr.number,
-                    title:    pr.title.unwrap_or_default(),
+                    id:         pr.id.0,
+                    number:     pr.number,
+                    title:      pr.title.unwrap_or_default(),
                     state,
-                    url:      pr.html_url.map(|u| u.to_string()).unwrap_or_default(),
-                    author:   pr.user.map(|u| u.login).unwrap_or_default(),
-                    repo:     repo.name.clone(),
-                    provider: "github".to_string(),
+                    url:        pr.html_url.map(|u| u.to_string()).unwrap_or_default(),
+                    author:     pr.user.map(|u| u.login).unwrap_or_default(),
+                    repo:       repo.name.clone(),
+                    provider:   "github".to_string(),
+                    created_at: pr.created_at
+                        .map(|dt| dt.timestamp().max(0) as u64)
+                        .unwrap_or(0),
+                    draft:      pr.draft.unwrap_or(false),
+                    reviewers:  pr.requested_reviewers
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|u| u.login)
+                        .collect(),
+                    assignees:  pr.assignees
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|u| u.login)
+                        .collect(),
                 }
             })
             .collect();
