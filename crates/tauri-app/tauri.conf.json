@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "identifier": "com.devwatch.app",
   "build": {
-    "beforeDevCommand": "npm --prefix ui install && npm --prefix ui run dev",
-    "beforeBuildCommand": "npm --prefix ui run build",
+    "beforeDevCommand": "cd ui && npm install && npm run dev",
+    "beforeBuildCommand": "cd ui && npm run build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "ui/dist"
   },
