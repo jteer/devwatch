@@ -112,8 +112,10 @@ fn get_app_settings(state: State<'_, Mutex<AppSettings>>) -> AppSettings {
 }
 
 #[tauri::command]
-fn save_app_settings(settings: AppSettings, state: State<'_, Mutex<AppSettings>>) {
+fn save_app_settings(settings: AppSettings, state: State<'_, Mutex<AppSettings>>) -> Result<(), String> {
+    db_save_settings(&settings).map_err(|e| e.to_string())?;
     *state.lock().unwrap() = settings;
+    Ok(())
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -122,7 +124,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(AppState::default()))
-        .manage(Mutex::new(AppSettings::default()))
+        .manage(Mutex::new(load_settings()))
         .invoke_handler(tauri::generate_handler![
             list_prs,
             get_connection_status,
@@ -218,4 +220,53 @@ pub fn find_config_path() -> std::path::PathBuf {
         }
     }
     std::path::PathBuf::from("config.toml")
+}
+
+// ── Shared SQLite settings (same DB as the daemon + TUI) ──────────────────────
+
+fn settings_db_path() -> Option<std::path::PathBuf> {
+    dirs::data_local_dir().map(|d| d.join("devwatch").join("state.db"))
+}
+
+fn open_settings_db() -> anyhow::Result<rusqlite::Connection> {
+    let path = settings_db_path()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine local data directory"))?;
+    if !path.exists() {
+        return Err(anyhow::anyhow!("DB not found at {}", path.display()));
+    }
+    let conn = rusqlite::Connection::open(&path)?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );",
+    )?;
+    Ok(conn)
+}
+
+fn load_settings() -> AppSettings {
+    let Ok(conn) = open_settings_db() else { return AppSettings::default() };
+    let close_behaviour = conn
+        .query_row("SELECT value FROM settings WHERE key = 'close_behaviour'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|v| serde_json::from_str(&format!("\"{}\"", v)).ok())
+        .unwrap_or(CloseBehaviour::HideToTray);
+    let notification_mode = conn
+        .query_row("SELECT value FROM settings WHERE key = 'notification_mode'", [], |r| r.get::<_, String>(0))
+        .ok()
+        .and_then(|v| serde_json::from_str(&format!("\"{}\"", v)).ok())
+        .unwrap_or(NotificationMode::InApp);
+    AppSettings { close_behaviour, notification_mode }
+}
+
+fn db_save_settings(settings: &AppSettings) -> anyhow::Result<()> {
+    let conn = open_settings_db()?;
+    // serde snake_case strings, strip surrounding quotes
+    let cb = serde_json::to_string(&settings.close_behaviour)?;
+    let nm = serde_json::to_string(&settings.notification_mode)?;
+    let upsert = "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                  ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+    conn.execute(upsert, rusqlite::params!["close_behaviour",   cb.trim_matches('"')])?;
+    conn.execute(upsert, rusqlite::params!["notification_mode", nm.trim_matches('"')])?;
+    Ok(())
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { useTheme } from 'next-themes'
 import { Plus, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -56,6 +57,7 @@ export default function Settings({ notifMode, onNotifModeChange }: SettingsProps
   async function saveAppSettings(next: AppSettings) {
     onNotifModeChange(next.notification_mode)
     await invoke('save_app_settings', { settings: next }).catch(console.error)
+    toast.success('Settings saved')
   }
 
   async function saveDaemonConfig(opts?: { port?: string; interval?: string; repos?: RepoConfig[] }) {
@@ -66,6 +68,7 @@ export default function Settings({ notifMode, onNotifModeChange }: SettingsProps
       repos:              (opts?.repos ?? repos).map(r => ({ ...r, token: r.token || undefined })),
     }
     await invoke('save_config', { config }).catch(console.error)
+    toast.success('Settings saved')
   }
 
   // Debounce ref for text fields

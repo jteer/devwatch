@@ -8,7 +8,7 @@ import {
   createColumnHelper,
   type SortingState,
 } from '@tanstack/react-table'
-import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
+import { ArrowUp, ArrowDown, ArrowUpDown, Github, Gitlab } from 'lucide-react'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -42,7 +42,16 @@ export function PrTable({ prs, filter, onRowClick }: PrTableProps) {
     col.accessor('repo', {
       header: 'Repo',
       size: 200,
-      cell: i => <span className="text-muted-foreground text-xs">{i.getValue()}</span>,
+      cell: i => {
+        const provider = i.row.original.provider
+        const Icon = provider === 'gitlab' ? Gitlab : Github
+        return (
+          <span className="flex items-center gap-1.5 text-muted-foreground text-xs">
+            <Icon className="h-3 w-3 shrink-0 opacity-70" />
+            {i.getValue()}
+          </span>
+        )
+      },
     }),
     col.accessor('title', {
       header: 'Title',

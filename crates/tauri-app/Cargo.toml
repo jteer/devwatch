@@ -22,3 +22,5 @@ tokio-util    = { workspace = true }
 futures-util  = "0.3"
 open          = "5"
 tauri-plugin-notification = "2"
+rusqlite      = { version = "0.31", features = ["bundled"] }
+dirs          = "5"
