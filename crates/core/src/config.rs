@@ -10,6 +10,7 @@ pub struct AppConfig {
     #[serde(default = "default_interval")]
     pub poll_interval_secs: u64,
 
+    #[serde(default)]
     pub repos: Vec<RepoConfig>,
 
     /// UI colour theme: "dark" | "light" | "high-contrast" (default: "dark")

@@ -5,3 +5,6 @@ Cargo.lock
 config.toml
 config.local.toml
 *.local.toml
+
+# Claude Code local settings (user-specific)
+.claude/settings.local.json
