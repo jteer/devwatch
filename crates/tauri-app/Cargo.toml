@@ -7,11 +7,18 @@ edition = "2021"
 name = "devwatch-app"
 path = "src/main.rs"
 
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
 [dependencies]
 devwatch-core = { path = "../core" }
-tokio      = { workspace = true }
-serde_json = { workspace = true }
-anyhow     = { workspace = true }
-
-# Phase 3 — uncomment when implementing
-# tauri = { version = "2", features = ["tray-icon"] }
+tauri         = { version = "2", features = ["tray-icon"] }
+tokio         = { workspace = true }
+serde         = { workspace = true, features = ["derive"] }
+serde_json    = { workspace = true }
+anyhow        = { workspace = true }
+toml          = { workspace = true }
+tokio-util    = { workspace = true }
+futures-util  = "0.3"
+open          = "5"
+tauri-plugin-notification = "2"
