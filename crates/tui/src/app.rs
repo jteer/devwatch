@@ -14,6 +14,7 @@ use devwatch_core::types::{PullRequest, VcsEvent};
 use tokio::process::Child;
 
 use crate::config_editor::{ConfigAction, ConfigEditor};
+use crate::theme::Theme;
 
 const MAX_LOG_ENTRIES: usize = 100;
 
@@ -66,6 +67,11 @@ impl ColumnId {
     }
 }
 
+// ── Sort direction ────────────────────────────────────────────────────────────
+
+#[derive(Clone, PartialEq)]
+pub enum SortDir { Asc, Desc }
+
 // ── App mode ──────────────────────────────────────────────────────────────────
 
 pub enum AppMode {
@@ -73,8 +79,13 @@ pub enum AppMode {
     Normal,
     /// Config editor overlay.
     Config(ConfigEditor),
+    /// Column header selection — `cursor` is the highlighted column index.
+    /// ←/→/Tab move the cursor; Enter sorts; ↑/↓ return to row scrolling.
+    HeaderSelect { cursor: usize },
     /// Column reorder mode — `cursor` is the index of the highlighted column.
     ReorderColumns { cursor: usize },
+    /// Filter input is open — keystrokes go to the filter buffer.
+    Filter,
 }
 
 // ── Log entry ─────────────────────────────────────────────────────────────────
@@ -100,12 +111,18 @@ pub struct App {
     pub mode: AppMode,
     /// Ordered list of visible columns (user-reorderable).
     pub column_order: Vec<ColumnId>,
+    /// Active sort: which column and direction. `None` = insertion order.
+    pub sort: Option<(ColumnId, SortDir)>,
+    /// Live filter text (empty = show all).
+    pub filter: String,
     /// True when running in `--demo` mode (no daemon).
     pub is_demo: bool,
     /// Path to config file, used by the config editor.
     pub config_path: PathBuf,
     /// Loaded config (for opening the editor pre-populated).
     pub config: AppConfig,
+    /// Active colour theme.
+    pub theme: Theme,
     /// Child process handle when this TUI spawned the daemon.
     _daemon_child: Option<Child>,
     /// Keeps the demo channel open; `None` in normal mode.
@@ -120,6 +137,7 @@ impl App {
         config: AppConfig,
         config_path: PathBuf,
     ) -> Self {
+        let theme = Theme::from_name(&config.theme);
         Self {
             prs: Vec::new(),
             log: VecDeque::with_capacity(MAX_LOG_ENTRIES),
@@ -130,9 +148,12 @@ impl App {
             polling_until: None,
             mode: AppMode::Normal,
             column_order: ColumnId::default_order(),
+            sort: None,
+            filter: String::new(),
             is_demo: false,
             config_path,
             config,
+            theme,
             _daemon_child: daemon_child,
             _demo_keep_alive: None,
             daemon_rx,
@@ -148,22 +169,22 @@ impl App {
             .as_secs();
 
         let prs = vec![
-            pr( 1, "owner/frontend", "Add dark mode to settings panel",          "alice",   "open", now_unix - 60 * 25,    false),
-            pr( 2, "owner/backend",  "Fix memory leak in connection pool",        "bob",     "open", now_unix - 3600 * 2,   false),
-            pr( 3, "owner/frontend", "WIP: Refactor navigation sidebar",          "charlie", "open", now_unix - 3600,       true),
-            pr( 4, "owner/api",      "Update rate limiting middleware",            "dave",    "open", now_unix - 3600 * 18,  false),
-            pr( 5, "owner/backend",  "Bump all dependencies to latest",           "eve",     "open", now_unix - 86400 * 5,  false),
-            pr( 6, "owner/api",      "Add OpenAPI spec for /v2 routes",           "frank",   "open", now_unix - 86400 * 21, false),
-            pr( 7, "owner/infra",    "Migrate CI to GitHub Actions",              "grace",   "open", now_unix - 3600 * 6,   false),
-            pr( 8, "owner/frontend", "WIP: Add i18n support",                     "heidi",   "open", now_unix - 60 * 45,    true),
-            pr( 9, "owner/backend",  "Optimize slow queries in reports endpoint", "ivan",    "open", now_unix - 86400 * 3,  false),
-            pr(10, "owner/api",      "Deprecate v1 authentication endpoints",     "judy",    "open", now_unix - 86400 * 12, false),
-            pr(11, "owner/infra",    "Add Terraform modules for staging env",     "karl",    "open", now_unix - 3600 * 30,  false),
-            pr(12, "owner/backend",  "Replace Redis cache with in-process LRU",   "laura",   "open", now_unix - 86400 * 2,  false),
-            pr(13, "owner/frontend", "Fix mobile layout on small screens",        "mallory", "open", now_unix - 60 * 10,    false),
-            pr(14, "owner/api",      "Add webhook support for PR events",         "niaj",    "open", now_unix - 86400 * 8,  false),
-            pr(15, "owner/infra",    "Upgrade Kubernetes cluster to 1.30",        "oscar",   "open", now_unix - 86400 * 15, false),
-            pr(16, "owner/backend",  "Add structured logging with tracing crate", "peggy",   "open", now_unix - 3600 * 4,   false),
+            pr_full( 1, "owner/frontend", "Add dark mode to settings panel",          "alice",   "open",   now_unix - 60 * 25,    false, vec!["you"], vec![]),
+            pr_full( 2, "owner/backend",  "Fix memory leak in connection pool",        "bob",     "closed", now_unix - 3600 * 2,   false, vec![], vec!["you"]),
+            pr( 3, "owner/frontend", "WIP: Refactor navigation sidebar",          "charlie", "open",   now_unix - 3600,       true),
+            pr_full( 4, "owner/api",      "Update rate limiting middleware",            "dave",    "open",   now_unix - 3600 * 18,  false, vec!["you", "alice"], vec![]),
+            pr( 5, "owner/backend",  "Bump all dependencies to latest",           "eve",     "open",   now_unix - 86400 * 5,  false),
+            pr( 6, "owner/api",      "Add OpenAPI spec for /v2 routes",           "frank",   "open",   now_unix - 86400 * 21, false),
+            pr( 7, "owner/infra",    "Migrate CI to GitHub Actions",              "grace",   "merged", now_unix - 3600 * 6,   false),
+            pr( 8, "owner/frontend", "WIP: Add i18n support",                     "heidi",   "open",   now_unix - 60 * 45,    true),
+            pr( 9, "owner/backend",  "Optimize slow queries in reports endpoint", "ivan",    "open",   now_unix - 86400 * 3,  false),
+            pr(10, "owner/api",      "Deprecate v1 authentication endpoints",     "judy",    "open",   now_unix - 86400 * 12, false),
+            pr(11, "owner/infra",    "Add Terraform modules for staging env",     "karl",    "closed", now_unix - 3600 * 30,  false),
+            pr(12, "owner/backend",  "Replace Redis cache with in-process LRU",   "laura",   "open",   now_unix - 86400 * 2,  false),
+            pr(13, "owner/frontend", "Fix mobile layout on small screens",        "mallory", "open",   now_unix - 60 * 10,    false),
+            pr(14, "owner/api",      "Add webhook support for PR events",         "niaj",    "open",   now_unix - 86400 * 8,  false),
+            pr(15, "owner/infra",    "Upgrade Kubernetes cluster to 1.30",        "oscar",   "merged", now_unix - 86400 * 15, false),
+            pr(16, "owner/backend",  "Add structured logging with tracing crate", "peggy",   "open",   now_unix - 3600 * 4,   false),
         ];
 
         let mut log: VecDeque<LogEntry> = VecDeque::with_capacity(MAX_LOG_ENTRIES);
@@ -180,6 +201,7 @@ impl App {
         log.push_back(LogEntry { timestamp: t(60),  message: "closed PR #0 Remove legacy auth flow  [owner/backend]".into() });
         log.push_back(LogEntry { timestamp: t(120), message: "snapshot: 16 open PRs".into() });
 
+        let theme = Theme::from_name(&config.theme);
         let mut app = Self {
             prs,
             log,
@@ -190,9 +212,12 @@ impl App {
             polling_until: None,
             mode: AppMode::Normal,
             column_order: ColumnId::default_order(),
+            sort: None,
+            filter: String::new(),
             is_demo: true,
             config_path,
             config,
+            theme,
             _daemon_child: None,
             _demo_keep_alive: Some(tx),
             daemon_rx: rx,
@@ -204,6 +229,48 @@ impl App {
     /// Seconds elapsed since the last real VCS event, or `None` if none received yet.
     pub fn event_timer(&self) -> Option<u64> {
         self.last_event.map(|t| t.elapsed().as_secs())
+    }
+
+    /// PRs after applying the active filter and sort. Used by all rendering.
+    pub fn visible_prs(&self) -> Vec<&PullRequest> {
+        let q = self.filter.to_lowercase();
+        let mut prs: Vec<&PullRequest> = self.prs.iter()
+            .filter(|pr| {
+                if q.is_empty() { return true; }
+                pr.title.to_lowercase().contains(&q)
+                    || pr.author.to_lowercase().contains(&q)
+                    || pr.repo.to_lowercase().contains(&q)
+                    || pr.reviewers.iter().any(|r| r.to_lowercase().contains(&q))
+                    || pr.assignees.iter().any(|a| a.to_lowercase().contains(&q))
+            })
+            .collect();
+
+        if let Some((col, dir)) = &self.sort {
+            prs.sort_by(|a, b| {
+                let ord = match col {
+                    ColumnId::Number => a.number.cmp(&b.number),
+                    ColumnId::Repo   => a.repo.cmp(&b.repo),
+                    ColumnId::Title  => a.title.cmp(&b.title),
+                    ColumnId::Author => a.author.cmp(&b.author),
+                    // Age: larger created_at = newer = smaller age, so reverse for "Age asc"
+                    ColumnId::Age    => b.created_at.cmp(&a.created_at),
+                    ColumnId::State  => a.state.cmp(&b.state),
+                };
+                if *dir == SortDir::Desc { ord.reverse() } else { ord }
+            });
+        }
+        prs
+    }
+
+    /// Clamp the table selection to the current visible PR count.
+    fn clamp_selection(&mut self) {
+        let count = self.visible_prs().len();
+        match self.table_state.selected() {
+            _ if count == 0 => self.table_state.select(None),
+            Some(i) if i >= count => self.table_state.select(Some(count - 1)),
+            None if count > 0 => self.table_state.select(Some(0)),
+            _ => {}
+        }
     }
 
     pub async fn run(mut self, mut terminal: ratatui::DefaultTerminal) -> Result<()> {
@@ -257,8 +324,54 @@ impl App {
         match &mut self.mode {
             AppMode::Config(editor) => {
                 match editor.handle_key(code) {
-                    ConfigAction::Exit => self.mode = AppMode::Normal,
+                    ConfigAction::Exit => {
+                        self.theme = Theme::from_name(&self.config.theme);
+                        self.mode = AppMode::Normal;
+                    }
+                    ConfigAction::Saved(theme_name) => {
+                        self.config.theme = theme_name;
+                        self.theme = Theme::from_name(&self.config.theme);
+                    }
                     ConfigAction::None => {}
+                }
+            }
+            AppMode::HeaderSelect { cursor } => {
+                let cursor = *cursor;
+                let last = self.column_order.len().saturating_sub(1);
+                match code {
+                    KeyCode::Left | KeyCode::BackTab => {
+                        if let AppMode::HeaderSelect { cursor: c } = &mut self.mode {
+                            *c = if *c == 0 { last } else { *c - 1 };
+                        }
+                    }
+                    KeyCode::Right | KeyCode::Tab => {
+                        if let AppMode::HeaderSelect { cursor: c } = &mut self.mode {
+                            *c = if *c >= last { 0 } else { *c + 1 };
+                        }
+                    }
+                    KeyCode::Enter => {
+                        // Toggle sort: Asc → Desc → off
+                        let col = self.column_order[cursor];
+                        self.sort = match &self.sort {
+                            Some((sc, SortDir::Asc))  if *sc == col => Some((col, SortDir::Desc)),
+                            Some((sc, SortDir::Desc)) if *sc == col => None,
+                            _                                        => Some((col, SortDir::Asc)),
+                        };
+                        self.clamp_selection();
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        self.mode = AppMode::Normal;
+                        self.prev_row();
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        self.mode = AppMode::Normal;
+                        self.next_row();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.mode = AppMode::Normal;
+                        if code == KeyCode::Char('q') { self.should_quit = true; }
+                    }
+                    _ => {}
                 }
             }
             AppMode::ReorderColumns { cursor } => {
@@ -271,7 +384,6 @@ impl App {
                     KeyCode::Right | KeyCode::Char('l') => {
                         if let AppMode::ReorderColumns { cursor: c } = &mut self.mode { *c = (*c + 1).min(last); }
                     }
-                    // Shift+H / Shift+L move the column itself.
                     KeyCode::Char('H') => {
                         if cursor > 0 {
                             self.column_order.swap(cursor, cursor - 1);
@@ -291,15 +403,43 @@ impl App {
                     _ => {}
                 }
             }
+            AppMode::Filter => {
+                match code {
+                    KeyCode::Esc | KeyCode::Enter => {
+                        self.mode = AppMode::Normal;
+                        self.clamp_selection();
+                    }
+                    KeyCode::Backspace => { self.filter.pop(); self.clamp_selection(); }
+                    KeyCode::Char(c)   => { self.filter.push(c); self.clamp_selection(); }
+                    _ => {}
+                }
+            }
             AppMode::Normal => self.handle_normal_key(code),
         }
     }
 
     fn handle_normal_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc => {
+                // Esc clears an active filter; otherwise quits.
+                if !self.filter.is_empty() {
+                    self.filter.clear();
+                    self.clamp_selection();
+                } else {
+                    self.should_quit = true;
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') => self.next_row(),
             KeyCode::Up   | KeyCode::Char('k') => self.prev_row(),
+            // ←/→/Tab enter header-selection mode.
+            KeyCode::Left | KeyCode::BackTab => {
+                let last = self.column_order.len().saturating_sub(1);
+                self.mode = AppMode::HeaderSelect { cursor: last };
+            }
+            KeyCode::Right | KeyCode::Tab => {
+                self.mode = AppMode::HeaderSelect { cursor: 0 };
+            }
             KeyCode::Enter => self.open_selected_url(),
             KeyCode::Char('c') => {
                 let editor = ConfigEditor::new(&self.config, self.config_path.clone());
@@ -307,6 +447,31 @@ impl App {
             }
             KeyCode::Char('o') => {
                 self.mode = AppMode::ReorderColumns { cursor: 0 };
+            }
+            // s → advance to next column (cycles through then clears)
+            KeyCode::Char('s') => {
+                self.sort = match &self.sort {
+                    None => Some((self.column_order[0], SortDir::Asc)),
+                    Some((col, _)) => {
+                        let idx = self.column_order.iter().position(|c| c == col).unwrap_or(0);
+                        if idx + 1 < self.column_order.len() {
+                            Some((self.column_order[idx + 1], SortDir::Asc))
+                        } else {
+                            None
+                        }
+                    }
+                };
+                self.clamp_selection();
+            }
+            // S → toggle direction on current sort column
+            KeyCode::Char('S') => {
+                self.sort = self.sort.take().map(|(col, dir)| {
+                    (col, if dir == SortDir::Asc { SortDir::Desc } else { SortDir::Asc })
+                });
+                self.clamp_selection();
+            }
+            KeyCode::Char('/') => {
+                self.mode = AppMode::Filter;
             }
             _ => {}
         }
@@ -355,28 +520,24 @@ impl App {
             VcsEvent::PullRequestClosed(pr) => {
                 self.push_log(format!("closed PR #{} {}  [{}]", pr.number, pr.title, pr.repo));
                 self.prs.retain(|p| !(p.number == pr.number && p.repo == pr.repo));
-                if let Some(sel) = self.table_state.selected() {
-                    if !self.prs.is_empty() {
-                        self.table_state.select(Some(sel.min(self.prs.len() - 1)));
-                    } else {
-                        self.table_state.select(None);
-                    }
-                }
+                self.clamp_selection();
             }
         }
     }
 
     fn next_row(&mut self) {
-        if self.prs.is_empty() { return; }
+        let count = self.visible_prs().len();
+        if count == 0 { return; }
         let next = match self.table_state.selected() {
-            Some(i) => (i + 1).min(self.prs.len() - 1),
+            Some(i) => (i + 1).min(count - 1),
             None    => 0,
         };
         self.table_state.select(Some(next));
     }
 
     fn prev_row(&mut self) {
-        if self.prs.is_empty() { return; }
+        let count = self.visible_prs().len();
+        if count == 0 { return; }
         let prev = match self.table_state.selected() {
             Some(0) | None => 0,
             Some(i)        => i - 1,
@@ -386,7 +547,8 @@ impl App {
 
     fn open_selected_url(&self) {
         if let Some(i) = self.table_state.selected() {
-            if let Some(pr) = self.prs.get(i) {
+            let visible = self.visible_prs();
+            if let Some(pr) = visible.get(i) {
                 if !pr.url.is_empty() {
                     let _ = open::that(&pr.url);
                 }
@@ -403,6 +565,13 @@ impl App {
 // ── Demo helpers ──────────────────────────────────────────────────────────────
 
 fn pr(number: u64, repo: &str, title: &str, author: &str, state: &str, created_at: u64, draft: bool) -> PullRequest {
+    pr_full(number, repo, title, author, state, created_at, draft, vec![], vec![])
+}
+
+fn pr_full(
+    number: u64, repo: &str, title: &str, author: &str, state: &str,
+    created_at: u64, draft: bool, reviewers: Vec<&str>, assignees: Vec<&str>,
+) -> PullRequest {
     PullRequest {
         id: number,
         number,
@@ -414,6 +583,8 @@ fn pr(number: u64, repo: &str, title: &str, author: &str, state: &str, created_a
         provider: "github".to_string(),
         created_at,
         draft,
+        reviewers: reviewers.into_iter().map(|s| s.to_string()).collect(),
+        assignees: assignees.into_iter().map(|s| s.to_string()).collect(),
     }
 }
 

@@ -11,63 +11,87 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppMode, ColumnId, ConnectionStatus};
+use crate::app::{App, AppMode, ColumnId, ConnectionStatus, SortDir};
 use crate::config_editor::{ConfigEditor, FocusedItem, RepoField};
-
-const HEADER_FG:   Color = Color::Cyan;
-const SELECTED_FG: Color = Color::Yellow;
-const DIM:         Color = Color::DarkGray;
-const NEW_COLOR:   Color = Color::Green;
-const UPD_COLOR:   Color = Color::Yellow;
-const CLO_COLOR:   Color = Color::Red;
-const DRAFT_COLOR: Color = Color::DarkGray;
+use crate::theme::Theme;
 
 // ── Top-level draw ────────────────────────────────────────────────────────────
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let [table_area, log_area, status_area] = Layout::vertical([
+    // Live theme preview while config editor is open.
+    if let AppMode::Config(editor) = &app.mode {
+        app.theme = Theme::from_name(&editor.theme_buf);
+    }
+
+    let filter_active = matches!(app.mode, AppMode::Filter) || !app.filter.is_empty();
+    let [table_area, log_area, filter_area, status_area] = Layout::vertical([
         Constraint::Min(6),
         Constraint::Length(8),
+        Constraint::Length(if filter_active { 1 } else { 0 }),
         Constraint::Length(1),
     ])
     .areas(frame.area());
 
     render_pr_table(frame, app, table_area);
     render_event_log(frame, app, log_area);
+    if filter_active {
+        render_filter_bar(frame, app, filter_area);
+    }
     render_status_bar(frame, app, status_area);
 
     if let AppMode::Config(editor) = &mut app.mode {
-        render_config_editor(frame, editor, frame.area());
+        render_config_editor(frame, editor, &app.theme, frame.area());
     }
 }
 
 // ── PR table ──────────────────────────────────────────────────────────────────
 
 fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
+    let t = &app.theme;
     let reorder_cursor = match &app.mode {
         AppMode::ReorderColumns { cursor } => Some(*cursor),
         _ => None,
     };
-
-    let title = if app.is_demo {
-        format!(" Pull Requests ({} open)  [DEMO] ", app.prs.len())
-    } else {
-        format!(" Pull Requests ({} open) ", app.prs.len())
+    let header_select_cursor = match &app.mode {
+        AppMode::HeaderSelect { cursor } => Some(*cursor),
+        _ => None,
     };
 
-    // Build header cells — highlight the selected column in reorder mode.
+    let visible = app.visible_prs();
+    let pr_count = visible.len();
+
+    let title = if app.is_demo {
+        format!(" Pull Requests ({} open)  [DEMO] ", pr_count)
+    } else if !app.filter.is_empty() {
+        format!(" Pull Requests ({} matching) ", pr_count)
+    } else {
+        format!(" Pull Requests ({} open) ", pr_count)
+    };
+
+    // Build header cells — indicators for reorder/sort cursor and sort direction.
     let header_cells: Vec<Cell> = app
         .column_order
         .iter()
         .enumerate()
         .map(|(i, col)| {
+            let sort_indicator = app.sort.as_ref().and_then(|(sc, dir)| {
+                if sc == col { Some(if *dir == SortDir::Asc { " ▲" } else { " ▼" }) } else { None }
+            }).unwrap_or("");
+
+            let label = format!("{}{}", col.header(), sort_indicator);
+
             let style = if reorder_cursor == Some(i) {
-                // Inverted cyan so the column stands out.
-                Style::new().fg(Color::Black).bg(HEADER_FG).bold()
+                Style::new().fg(Color::Black).bg(t.header).bold()
+            } else if header_select_cursor == Some(i) {
+                Style::new()
+                    .fg(Color::Black)
+                    .bg(t.header)
+                    .bold()
+                    .add_modifier(Modifier::UNDERLINED)
             } else {
-                Style::new().fg(HEADER_FG).bold()
+                Style::new().fg(t.header).bold()
             };
-            Cell::from(col.header()).style(style)
+            Cell::from(label).style(style)
         })
         .collect();
     let header = Row::new(header_cells).height(1);
@@ -77,32 +101,29 @@ fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .unwrap_or_default()
         .as_secs();
 
-    let rows: Vec<Row> = app
-        .prs
+    let rows: Vec<Row> = visible
         .iter()
         .map(|pr| {
-            // Pre-build each possible cell.
             let number_cell = Cell::from(format!("  #{}", pr.number));
             let repo_cell   = Cell::from(pr.repo.clone());
             let title_cell  = if pr.draft {
                 Cell::from(Line::from(vec![
-                    Span::styled("[draft] ", Style::new().fg(DRAFT_COLOR)),
+                    Span::styled("[draft] ", Style::new().fg(t.draft)),
                     Span::raw(pr.title.clone()),
                 ]))
             } else {
                 Cell::from(pr.title.clone())
             };
             let author_cell = Cell::from(pr.author.clone());
-            let age_cell    = Cell::from(pr_age(now, pr.created_at)).style(Style::new().fg(DIM));
+            let age_cell    = Cell::from(pr_age(now, pr.created_at)).style(Style::new().fg(t.dim));
             let state_style = match pr.state.as_str() {
-                "open"   => Style::new().fg(Color::Green),
-                "merged" => Style::new().fg(Color::Magenta),
-                "closed" => Style::new().fg(Color::Red),
-                _        => Style::new().fg(DIM),
+                "open"   => Style::new().fg(t.state_open),
+                "merged" => Style::new().fg(t.state_merged),
+                "closed" => Style::new().fg(t.state_closed),
+                _        => Style::new().fg(t.dim),
             };
             let state_cell = Cell::from(pr.state.clone()).style(state_style);
 
-            // Emit cells in the user-defined column order.
             let cells: Vec<Cell> = app
                 .column_order
                 .iter()
@@ -137,7 +158,7 @@ fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::new().borders(Borders::ALL).title(title))
         .row_highlight_style(
             Style::default()
-                .fg(SELECTED_FG)
+                .fg(t.selected)
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::REVERSED),
         )
@@ -145,10 +166,9 @@ fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
 
     frame.render_stateful_widget(table, area, &mut app.table_state);
 
-    // Scrollbar — rendered on the right inner edge of the table block.
-    // Only draw when there's something to scroll.
-    let visible_rows = area.height.saturating_sub(3) as usize; // borders + header
-    if app.prs.len() > visible_rows {
+    // Scrollbar on right inner edge.
+    let visible_rows = area.height.saturating_sub(3) as usize;
+    if pr_count > visible_rows {
         let scroll_area = Rect {
             x:      area.x + area.width - 2,
             y:      area.y + 2,
@@ -156,7 +176,7 @@ fn render_pr_table(frame: &mut Frame, app: &mut App, area: Rect) {
             height: area.height.saturating_sub(3),
         };
         let selected = app.table_state.selected().unwrap_or(0);
-        let mut sb_state = ScrollbarState::new(app.prs.len())
+        let mut sb_state = ScrollbarState::new(pr_count)
             .viewport_content_length(visible_rows)
             .position(selected);
         frame.render_stateful_widget(
@@ -181,6 +201,7 @@ fn pr_age(now: u64, created_at: u64) -> String {
 // ── Event log ────────────────────────────────────────────────────────────────
 
 fn render_event_log(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
     let items: Vec<ListItem> = app
         .log
         .iter()
@@ -188,16 +209,16 @@ fn render_event_log(frame: &mut Frame, app: &App, area: Rect) {
         .take(area.height.saturating_sub(2) as usize)
         .map(|entry| {
             let (prefix, color) = if entry.message.starts_with("new") {
-                ("●", NEW_COLOR)
+                ("●", t.event_new)
             } else if entry.message.starts_with("upd") {
-                ("◆", UPD_COLOR)
+                ("◆", t.event_upd)
             } else if entry.message.starts_with("closed") {
-                ("○", CLO_COLOR)
+                ("○", t.event_clo)
             } else {
-                ("·", DIM)
+                ("·", t.dim)
             };
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{} ", entry.timestamp), Style::new().fg(DIM)),
+                Span::styled(format!("{} ", entry.timestamp), Style::new().fg(t.dim)),
                 Span::styled(format!("{prefix} "), Style::new().fg(color).bold()),
                 Span::raw(entry.message.clone()),
             ]))
@@ -210,31 +231,53 @@ fn render_event_log(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+// ── Filter bar ────────────────────────────────────────────────────────────────
+
+fn render_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let editing = matches!(app.mode, AppMode::Filter);
+    let cursor  = if editing { "▋" } else { "" };
+    let label   = Span::styled(" Filter: ", Style::new().fg(t.header));
+    let text    = Span::styled(
+        format!("{}{}", app.filter, cursor),
+        Style::new().fg(if editing { t.selected } else { Color::Reset }),
+    );
+    let hint = if !editing && !app.filter.is_empty() {
+        Span::styled("  (Esc to clear)", Style::new().fg(t.dim))
+    } else {
+        Span::raw("")
+    };
+    frame.render_widget(Paragraph::new(Line::from(vec![label, text, hint])), area);
+}
+
 // ── Status bar ────────────────────────────────────────────────────────────────
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
     let keys = match &app.mode {
-        AppMode::Config(_)            => " ↑↓/jk navigate  │  Enter edit  │  Tab next field  │  a add  │  d delete  │  s save  │  Esc back",
+        AppMode::Config(_)             => " ↑↓/jk navigate  │  Enter edit  │  Tab next field  │  a add  │  d delete  │  s save  │  Esc back",
+        AppMode::HeaderSelect { .. }   => " [←→/Tab] select column  │  Enter sort  │  [↑↓] back to rows  │  Esc cancel",
         AppMode::ReorderColumns { .. } => " ←→/hl select column  │  H/L move column  │  Esc done",
-        AppMode::Normal               => " ↑↓/jk navigate  │  Enter open URL  │  o reorder cols  │  c config  │  q quit",
+        AppMode::Filter                => " Type to filter  │  Enter/Esc close bar",
+        AppMode::Normal                => " [↑↓] scroll  [←→/Tab] select column  │  Enter open  │  / filter  │  s sort  │  o reorder  │  c config  │  q quit",
     };
 
     let (timer_text, timer_style) = match app.event_timer() {
-        None          => ("no events yet".to_string(), Style::new().fg(DIM)),
+        None          => ("no events yet".to_string(), Style::new().fg(t.dim)),
         Some(s) if s < 60 => (format!("last event {s}s ago"), Style::new()),
         Some(s)       => (format!("last event {}m {}s ago", s / 60, s % 60), Style::new()),
     };
 
     let is_polling = app.polling_until.map(|t| Instant::now() < t).unwrap_or(false);
     let (status_text, conn_style) = if app.is_demo {
-        ("Demo".to_string(), Style::new().fg(Color::Magenta))
+        ("Demo".to_string(), Style::new().fg(t.status_demo))
     } else if is_polling {
-        ("Polling…".to_string(), Style::new().fg(Color::Yellow))
+        ("Polling…".to_string(), Style::new().fg(t.status_warn))
     } else {
         let style = match app.status {
-            ConnectionStatus::Connected    => Style::new().fg(Color::Green),
-            ConnectionStatus::Connecting   => Style::new().fg(Color::Yellow),
-            ConnectionStatus::Disconnected => Style::new().fg(Color::Red),
+            ConnectionStatus::Connected    => Style::new().fg(t.status_ok),
+            ConnectionStatus::Connecting   => Style::new().fg(t.status_warn),
+            ConnectionStatus::Disconnected => Style::new().fg(t.status_err),
         };
         (app.status.to_string(), style)
     };
@@ -245,7 +288,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(keys, Style::new().fg(DIM)),
+            Span::styled(keys, Style::new().fg(t.dim)),
             Span::raw(" ".repeat(pad)),
             Span::styled(&right[..bullet_pos], timer_style),
             Span::styled(&right[bullet_pos..], conn_style),
@@ -256,44 +299,55 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 // ── Config editor overlay ─────────────────────────────────────────────────────
 
-fn render_config_editor(frame: &mut Frame, editor: &mut ConfigEditor, area: Rect) {
+fn render_config_editor(frame: &mut Frame, editor: &mut ConfigEditor, theme: &Theme, area: Rect) {
     let popup = centered_rect(72, 85, area);
     frame.render_widget(Clear, popup);
 
     let block = Block::new()
         .borders(Borders::ALL)
         .title(" Configuration ")
-        .style(Style::new().fg(Color::Cyan));
+        .style(Style::new().fg(theme.header));
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
     let [general_area, repo_area, status_area] = Layout::vertical([
-        Constraint::Length(6),
+        Constraint::Length(8),
         Constraint::Min(4),
         Constraint::Length(1),
     ])
     .areas(inner);
 
-    render_cfg_general(frame, editor, general_area);
-    render_cfg_repos(frame, editor, repo_area);
-    render_cfg_status(frame, editor, status_area);
+    render_cfg_general(frame, editor, theme, general_area);
+    render_cfg_repos(frame, editor, theme, repo_area);
+    render_cfg_status(frame, editor, theme, status_area);
 }
 
-fn render_cfg_general(frame: &mut Frame, editor: &ConfigEditor, area: Rect) {
+fn render_cfg_general(frame: &mut Frame, editor: &ConfigEditor, theme: &Theme, area: Rect) {
     let port_active     = editor.port_active();
     let interval_active = editor.interval_active();
+    let theme_active    = editor.theme_active();
+
+    let theme_display = format!("{}  (Space/←/→ to cycle)", editor.theme_buf);
 
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled("  daemon_port        ", Style::new().fg(HEADER_FG)),
+                Span::styled("  daemon_port        ", Style::new().fg(theme.header)),
                 Span::styled(field_value(&editor.port_buf, port_active), field_style(port_active)),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("  poll_interval_secs ", Style::new().fg(HEADER_FG)),
+                Span::styled("  poll_interval_secs ", Style::new().fg(theme.header)),
                 Span::styled(field_value(&editor.interval_buf, interval_active), field_style(interval_active)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  theme              ", Style::new().fg(theme.header)),
+                Span::styled(
+                    if theme_active { theme_display } else { editor.theme_buf.clone() },
+                    if theme_active { Style::new().fg(Color::Yellow) } else { Style::new() },
+                ),
             ]),
             Line::from(""),
         ]),
@@ -301,7 +355,7 @@ fn render_cfg_general(frame: &mut Frame, editor: &ConfigEditor, area: Rect) {
     );
 }
 
-fn render_cfg_repos(frame: &mut Frame, editor: &mut ConfigEditor, area: Rect) {
+fn render_cfg_repos(frame: &mut Frame, editor: &mut ConfigEditor, theme: &Theme, area: Rect) {
     let in_repos    = editor.focused == FocusedItem::Repos;
     let add_focused = editor.focused == FocusedItem::AddRepo;
 
@@ -337,7 +391,7 @@ fn render_cfg_repos(frame: &mut Frame, editor: &mut ConfigEditor, area: Rect) {
                 };
                 Span::styled(
                     display,
-                    if active { Style::new().fg(Color::Yellow) } else { Style::new().fg(DIM) },
+                    if active { Style::new().fg(Color::Yellow) } else { Style::new().fg(theme.dim) },
                 )
             };
 
@@ -352,23 +406,23 @@ fn render_cfg_repos(frame: &mut Frame, editor: &mut ConfigEditor, area: Rect) {
         })
         .collect();
 
-    let add_style = if add_focused { Style::new().fg(Color::Green).bold() } else { Style::new().fg(DIM) };
+    let add_style = if add_focused { Style::new().fg(theme.state_open).bold() } else { Style::new().fg(theme.dim) };
     items.push(ListItem::new(Line::from(Span::styled("  [+ Add Repo]", add_style))));
 
     let list = List::new(items)
-        .block(Block::new().borders(Borders::TOP).title(Span::styled(" Repositories ", Style::new().fg(HEADER_FG))))
-        .highlight_style(Style::new().fg(SELECTED_FG).add_modifier(Modifier::BOLD))
+        .block(Block::new().borders(Borders::TOP).title(Span::styled(" Repositories ", Style::new().fg(theme.header))))
+        .highlight_style(Style::new().fg(theme.selected).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
     frame.render_stateful_widget(list, area, &mut editor.repo_list_state);
 }
 
-fn render_cfg_status(frame: &mut Frame, editor: &ConfigEditor, area: Rect) {
+fn render_cfg_status(frame: &mut Frame, editor: &ConfigEditor, theme: &Theme, area: Rect) {
     let msg = editor.status_msg.as_deref().unwrap_or("");
     let style = if msg.starts_with("Error") || msg.starts_with("Write") || msg.starts_with("Serialise") {
-        Style::new().fg(Color::Red)
+        Style::new().fg(theme.status_err)
     } else {
-        Style::new().fg(Color::Green)
+        Style::new().fg(theme.status_ok)
     };
     frame.render_widget(Paragraph::new(Span::styled(msg, style)), area);
 }
