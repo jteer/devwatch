@@ -9,6 +9,7 @@ use crossterm::event::KeyCode;
 use ratatui::widgets::ListState;
 
 use devwatch_core::config::{AppConfig, RepoConfig};
+use crate::theme::Theme;
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -17,6 +18,8 @@ pub struct ConfigEditor {
     /// Editable copy of the port (kept as a string for inline editing).
     pub port_buf: String,
     pub interval_buf: String,
+    /// Current theme name (cycles through dark / light / high-contrast).
+    pub theme_buf: String,
     pub repos: Vec<RepoRow>,
     /// Which "row" in the overall list is highlighted.
     pub focused: FocusedItem,
@@ -32,6 +35,7 @@ pub struct ConfigEditor {
 pub enum FocusedItem {
     Port,
     Interval,
+    Theme,
     Repos,   // focus is inside the repo list
     AddRepo,
 }
@@ -56,6 +60,8 @@ pub enum RepoField {
 pub enum ConfigAction {
     None,
     Exit,
+    /// Config was saved successfully; carries the new theme name.
+    Saved(String),
 }
 
 // ── Impl ─────────────────────────────────────────────────────────────────────
@@ -77,6 +83,7 @@ impl ConfigEditor {
         Self {
             port_buf:      cfg.daemon_port.to_string(),
             interval_buf:  cfg.poll_interval_secs.to_string(),
+            theme_buf:     cfg.theme.clone(),
             repos,
             focused:        FocusedItem::Port,
             repo_list_state: ListState::default().with_selected(Some(0)),
@@ -103,9 +110,15 @@ impl ConfigEditor {
             KeyCode::Char('k') | KeyCode::Up    => self.move_up(),
             KeyCode::Enter                       => self.activate(),
             KeyCode::Backspace                   => self.backspace_active_field(),
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                if self.focused == FocusedItem::Theme => self.cycle_theme(),
             KeyCode::Char('a')                   => self.add_repo(),
             KeyCode::Char('d')                   => self.delete_repo(),
-            KeyCode::Char('s')                   => self.save(),
+            KeyCode::Char('s') => {
+                if self.save() {
+                    return ConfigAction::Saved(self.theme_buf.clone());
+                }
+            }
             KeyCode::Char(c)                     => self.append_to_active_field(c),
             KeyCode::Esc                         => return ConfigAction::Exit,
             _                                    => {}
@@ -150,6 +163,10 @@ impl ConfigEditor {
 
     // ── Field editing (port / interval) ──────────────────────────────────────
 
+    fn cycle_theme(&mut self) {
+        self.theme_buf = Theme::next_name(&self.theme_buf).to_string();
+    }
+
     fn backspace_active_field(&mut self) {
         match &self.focused {
             FocusedItem::Port     => { self.port_buf.pop(); }
@@ -173,6 +190,7 @@ impl ConfigEditor {
         match &self.focused {
             FocusedItem::Port     => {}
             FocusedItem::Interval => self.focused = FocusedItem::Port,
+            FocusedItem::Theme    => self.focused = FocusedItem::Interval,
             FocusedItem::Repos    => {
                 let sel = self.repo_list_state.selected().unwrap_or(0);
                 if sel == 0 {
@@ -183,7 +201,7 @@ impl ConfigEditor {
             }
             FocusedItem::AddRepo  => {
                 if self.repos.is_empty() {
-                    self.focused = FocusedItem::Interval;
+                    self.focused = FocusedItem::Theme;
                 } else {
                     self.focused = FocusedItem::Repos;
                     self.repo_list_state.select(Some(self.repos.len() - 1));
@@ -194,8 +212,9 @@ impl ConfigEditor {
 
     fn move_down(&mut self) {
         match &self.focused {
-            FocusedItem::Port => self.focused = FocusedItem::Interval,
-            FocusedItem::Interval => {
+            FocusedItem::Port     => self.focused = FocusedItem::Interval,
+            FocusedItem::Interval => self.focused = FocusedItem::Theme,
+            FocusedItem::Theme    => {
                 if self.repos.is_empty() {
                     self.focused = FocusedItem::AddRepo;
                 } else {
@@ -222,6 +241,7 @@ impl ConfigEditor {
             FocusedItem::Port | FocusedItem::Interval => {
                 // Already editable — nothing extra to do.
             }
+            FocusedItem::Theme => self.cycle_theme(),
             FocusedItem::Repos => {
                 if let Some(idx) = self.repo_list_state.selected() {
                     if idx < self.repos.len() {
@@ -260,14 +280,14 @@ impl ConfigEditor {
         }
     }
 
-    fn save(&mut self) {
+    fn save(&mut self) -> bool {
         let port: u16 = match self.port_buf.parse() {
             Ok(p) => p,
-            Err(_) => { self.status_msg = Some("Error: daemon_port must be a valid port number".into()); return; }
+            Err(_) => { self.status_msg = Some("Error: daemon_port must be a valid port number".into()); return false; }
         };
         let interval: u64 = match self.interval_buf.parse() {
             Ok(i) => i,
-            Err(_) => { self.status_msg = Some("Error: poll_interval_secs must be a number".into()); return; }
+            Err(_) => { self.status_msg = Some("Error: poll_interval_secs must be a number".into()); return false; }
         };
 
         let repos: Vec<RepoConfig> = self
@@ -281,13 +301,13 @@ impl ConfigEditor {
             })
             .collect();
 
-        let cfg = AppConfig { daemon_port: port, poll_interval_secs: interval, repos };
+        let cfg = AppConfig { daemon_port: port, poll_interval_secs: interval, repos, theme: self.theme_buf.clone() };
 
         match toml::to_string_pretty(&cfg) {
-            Err(e) => { self.status_msg = Some(format!("Serialise error: {e}")); }
+            Err(e) => { self.status_msg = Some(format!("Serialise error: {e}")); false }
             Ok(toml_str) => match std::fs::write(&self.config_path, toml_str) {
-                Ok(_)  => { self.status_msg = Some(format!("Saved to {}", self.config_path.display())); }
-                Err(e) => { self.status_msg = Some(format!("Write error: {e}")); }
+                Ok(_)  => { self.status_msg = Some(format!("Saved to {}", self.config_path.display())); true }
+                Err(e) => { self.status_msg = Some(format!("Write error: {e}")); false }
             },
         }
     }
@@ -298,4 +318,6 @@ impl ConfigEditor {
     pub fn port_active(&self) -> bool   { self.focused == FocusedItem::Port }
     /// True if the interval field is currently the active text target.
     pub fn interval_active(&self) -> bool { self.focused == FocusedItem::Interval }
+    /// True if the theme row is currently focused.
+    pub fn theme_active(&self) -> bool { self.focused == FocusedItem::Theme }
 }

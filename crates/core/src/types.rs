@@ -17,6 +17,10 @@ pub struct PullRequest {
     pub created_at: u64,
     /// True if this is a draft / work-in-progress PR.
     pub draft: bool,
+    /// GitHub logins of requested reviewers.
+    pub reviewers: Vec<String>,
+    /// GitHub logins of assignees.
+    pub assignees: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

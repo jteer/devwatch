@@ -62,6 +62,16 @@ impl VcsProvider for GithubProvider {
                         .map(|dt| dt.timestamp().max(0) as u64)
                         .unwrap_or(0),
                     draft:      pr.draft.unwrap_or(false),
+                    reviewers:  pr.requested_reviewers
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|u| u.login)
+                        .collect(),
+                    assignees:  pr.assignees
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|u| u.login)
+                        .collect(),
                 }
             })
             .collect();

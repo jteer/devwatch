@@ -11,6 +11,10 @@ pub struct AppConfig {
     pub poll_interval_secs: u64,
 
     pub repos: Vec<RepoConfig>,
+
+    /// UI colour theme: "dark" | "light" | "high-contrast" (default: "dark")
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -32,4 +36,8 @@ fn default_port() -> u16 {
 
 fn default_interval() -> u64 {
     60
+}
+
+fn default_theme() -> String {
+    "dark".to_string()
 }

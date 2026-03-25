@@ -2,6 +2,7 @@ mod app;
 mod config_editor;
 mod launch;
 mod settings;
+mod theme;
 mod ui;
 
 use std::path::PathBuf;
@@ -97,6 +98,7 @@ fn load_cfg_with_path() -> (AppConfig, PathBuf) {
             daemon_port: 7878,
             poll_interval_secs: 60,
             repos: vec![],
+            theme: "dark".to_string(),
         });
     (cfg, config_path)
 }
