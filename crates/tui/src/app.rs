@@ -88,6 +88,43 @@ pub enum AppMode {
     Filter,
 }
 
+// ── Notification mode ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NotificationMode { InApp, Os, Both, Off }
+
+impl NotificationMode {
+    pub fn next(&self) -> Self {
+        match self { Self::InApp => Self::Os, Self::Os => Self::Both, Self::Both => Self::Off, Self::Off => Self::InApp }
+    }
+    pub fn label(&self) -> &'static str {
+        match self { Self::InApp => "in_app", Self::Os => "os", Self::Both => "both", Self::Off => "off" }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s { "os" => Self::Os, "both" => Self::Both, "off" => Self::Off, _ => Self::InApp }
+    }
+}
+
+// ── Toast notifications ───────────────────────────────────────────────────────
+
+const TOAST_TTL: Duration = Duration::from_secs(4);
+
+#[derive(Debug, Clone)]
+pub enum ToastKind { New, Updated, Closed }
+
+#[derive(Debug, Clone)]
+pub struct Toast {
+    pub kind:       ToastKind,
+    pub message:    String,
+    pub expires_at: Instant,
+}
+
+impl Toast {
+    fn new(kind: ToastKind, message: String) -> Self {
+        Self { kind, message, expires_at: Instant::now() + TOAST_TTL }
+    }
+}
+
 // ── Log entry ─────────────────────────────────────────────────────────────────
 
 pub struct LogEntry {
@@ -115,6 +152,10 @@ pub struct App {
     pub sort: Option<(ColumnId, SortDir)>,
     /// Live filter text (empty = show all).
     pub filter: String,
+    /// Active toast notifications (newest last, expire after TTL).
+    pub toasts: VecDeque<Toast>,
+    /// How to deliver PR event notifications.
+    pub notif_mode: NotificationMode,
     /// True when running in `--demo` mode (no daemon).
     pub is_demo: bool,
     /// Path to config file, used by the config editor.
@@ -136,6 +177,7 @@ impl App {
         daemon_child: Option<Child>,
         config: AppConfig,
         config_path: PathBuf,
+        notif_mode: NotificationMode,
     ) -> Self {
         let theme = Theme::from_name(&config.theme);
         Self {
@@ -150,6 +192,8 @@ impl App {
             column_order: ColumnId::default_order(),
             sort: None,
             filter: String::new(),
+            toasts: VecDeque::new(),
+            notif_mode,
             is_demo: false,
             config_path,
             config,
@@ -214,6 +258,8 @@ impl App {
             column_order: ColumnId::default_order(),
             sort: None,
             filter: String::new(),
+            toasts: VecDeque::new(),
+            notif_mode: NotificationMode::InApp,
             is_demo: true,
             config_path,
             config,
@@ -285,7 +331,7 @@ impl App {
             terminal.draw(|frame| crate::ui::draw(frame, &mut self))?;
 
             tokio::select! {
-                _ = tick.tick() => {}
+                _ = tick.tick() => { self.expire_toasts(); }
 
                 // Demo polling pulse (guarded — never fires in normal mode)
                 _ = demo_tick.tick(), if self.is_demo => {
@@ -445,6 +491,13 @@ impl App {
                 let editor = ConfigEditor::new(&self.config, self.config_path.clone());
                 self.mode = AppMode::Config(editor);
             }
+            KeyCode::Char('n') if self.is_demo => {
+                self.add_demo_pr();
+            }
+            KeyCode::Char('m') => {
+                self.notif_mode = self.notif_mode.next();
+                let _ = crate::settings::save_notif_mode(&self.notif_mode);
+            }
             KeyCode::Char('o') => {
                 self.mode = AppMode::ReorderColumns { cursor: 0 };
             }
@@ -506,6 +559,7 @@ impl App {
         match event {
             VcsEvent::NewPullRequest(pr) => {
                 self.push_log(format!("new  PR #{} {}  [{}]", pr.number, pr.title, pr.repo));
+                self.notify(ToastKind::New, format!("#{} {}", pr.number, pr.title), &pr.repo);
                 self.prs.push(pr);
                 if self.table_state.selected().is_none() {
                     self.table_state.select(Some(0));
@@ -513,16 +567,38 @@ impl App {
             }
             VcsEvent::PullRequestUpdated { old: _, new } => {
                 self.push_log(format!("upd  PR #{} {}  [{}]", new.number, new.title, new.repo));
+                self.notify(ToastKind::Updated, format!("#{} {}", new.number, new.title), &new.repo);
                 if let Some(pos) = self.prs.iter().position(|p| p.number == new.number && p.repo == new.repo) {
                     self.prs[pos] = new;
                 }
             }
             VcsEvent::PullRequestClosed(pr) => {
                 self.push_log(format!("closed PR #{} {}  [{}]", pr.number, pr.title, pr.repo));
+                self.notify(ToastKind::Closed, format!("#{} {}", pr.number, pr.title), &pr.repo);
                 self.prs.retain(|p| !(p.number == pr.number && p.repo == pr.repo));
                 self.clamp_selection();
             }
         }
+    }
+
+    fn notify(&mut self, kind: ToastKind, message: String, repo: &str) {
+        if matches!(self.notif_mode, NotificationMode::InApp | NotificationMode::Both) {
+            self.toasts.push_back(Toast::new(kind.clone(), message.clone()));
+        }
+        if matches!(self.notif_mode, NotificationMode::Os | NotificationMode::Both) {
+            let title = match kind {
+                ToastKind::New     => "New Pull Request",
+                ToastKind::Updated => "Pull Request Updated",
+                ToastKind::Closed  => "Pull Request Closed",
+            };
+            let body = format!("{message}  [{repo}]");
+            let _ = notify_rust::Notification::new().summary(title).body(&body).show();
+        }
+    }
+
+    pub fn expire_toasts(&mut self) {
+        let now = Instant::now();
+        self.toasts.retain(|t| t.expires_at > now);
     }
 
     fn next_row(&mut self) {
@@ -559,6 +635,55 @@ impl App {
     pub fn push_log(&mut self, message: String) {
         if self.log.len() == MAX_LOG_ENTRIES { self.log.pop_front(); }
         self.log.push_back(LogEntry { timestamp: now_hms(), message });
+    }
+}
+
+// ── Demo: add a fake PR ───────────────────────────────────────────────────────
+
+impl App {
+    pub fn add_demo_pr(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        static TITLES: &[&str] = &[
+            "Fix race condition in auth middleware",
+            "Add pagination to search results",
+            "Refactor database connection pool",
+            "Update dependencies to latest",
+            "Add unit tests for billing module",
+            "Improve error messages in API",
+            "Remove deprecated endpoints",
+            "Add support for webhook retries",
+            "Fix memory leak in background worker",
+            "Migrate config to environment variables",
+        ];
+        static AUTHORS: &[&str] = &["alice", "bob", "charlie", "dave", "eve", "frank"];
+        static REPOS:   &[&str] = &["owner/frontend", "owner/backend", "owner/api", "owner/infra"];
+
+        let idx  = now as usize;
+        let next = (self.prs.iter().map(|p| p.number).max().unwrap_or(0)) + 1;
+        let new_pr = pr_full(
+            next,
+            REPOS[idx % REPOS.len()],
+            TITLES[idx % TITLES.len()],
+            AUTHORS[idx % AUTHORS.len()],
+            "open",
+            now,
+            false,
+            vec![],
+            vec![],
+        );
+
+        self.push_log(format!("new  PR #{} {}  [{}]", new_pr.number, new_pr.title, new_pr.repo));
+        let msg  = format!("#{} {}", new_pr.number, new_pr.title);
+        let repo = new_pr.repo.clone();
+        self.notify(ToastKind::New, msg, &repo);
+        self.prs.push(new_pr);
+        if self.table_state.selected().is_none() {
+            self.table_state.select(Some(0));
+        }
     }
 }
 

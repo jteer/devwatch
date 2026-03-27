@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use crate::app::ColumnId;
+use crate::app::{ColumnId, NotificationMode};
 
 // ── DB path (mirrors daemon/src/store.rs) ────────────────────────────────────
 
@@ -33,6 +33,27 @@ pub fn load_column_order() -> Option<Vec<ColumnId>> {
         )
         .ok()?;
     parse_column_order(&value)
+}
+
+/// Load the saved notification mode from the DB.
+pub fn load_notif_mode() -> Option<NotificationMode> {
+    let conn = open_db().ok()?;
+    let value: String = conn
+        .query_row("SELECT value FROM settings WHERE key = 'notification_mode'", [], |row| row.get(0))
+        .ok()?;
+    Some(NotificationMode::from_str(&value))
+}
+
+/// Persist the notification mode to the DB.
+pub fn save_notif_mode(mode: &NotificationMode) -> Result<()> {
+    let conn = open_db().context("open settings DB")?;
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params!["notification_mode", mode.label()],
+    )
+    .context("write notification_mode")?;
+    Ok(())
 }
 
 /// Persist the current column order to the DB.
