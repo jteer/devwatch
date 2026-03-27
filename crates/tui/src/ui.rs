@@ -11,7 +11,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppMode, ColumnId, ConnectionStatus, SortDir};
+use crate::app::{App, AppMode, ColumnId, ConnectionStatus, NotificationMode, SortDir, ToastKind};
 use crate::config_editor::{ConfigEditor, FocusedItem, RepoField};
 use crate::theme::Theme;
 
@@ -42,6 +42,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::Config(editor) = &mut app.mode {
         render_config_editor(frame, editor, &app.theme, frame.area());
     }
+
+    render_toasts(frame, app);
 }
 
 // ── PR table ──────────────────────────────────────────────────────────────────
@@ -254,21 +256,14 @@ fn render_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
-    let keys = match &app.mode {
-        AppMode::Config(_)             => " ↑↓/jk navigate  │  Enter edit  │  Tab next field  │  a add  │  d delete  │  s save  │  Esc back",
-        AppMode::HeaderSelect { .. }   => " [←→/Tab] select column  │  Enter sort  │  [↑↓] back to rows  │  Esc cancel",
-        AppMode::ReorderColumns { .. } => " ←→/hl select column  │  H/L move column  │  Esc done",
-        AppMode::Filter                => " Type to filter  │  Enter/Esc close bar",
-        AppMode::Normal                => " [↑↓] scroll  [←→/Tab] select column  │  Enter open  │  / filter  │  s sort  │  o reorder  │  c config  │  q quit",
-    };
 
+    // ── Right side (always fully visible) ─────────────────────────────────────
     let (timer_text, timer_style) = match app.event_timer() {
-        None          => ("no events yet".to_string(), Style::new().fg(t.dim)),
-        Some(s) if s < 60 => (format!("last event {s}s ago"), Style::new()),
-        Some(s)       => (format!("last event {}m {}s ago", s / 60, s % 60), Style::new()),
+        None              => ("no events".to_string(),                              Style::new().fg(t.dim)),
+        Some(s) if s < 60 => (format!("last {s}s ago"),                            Style::new()),
+        Some(s)           => (format!("last {}m{}s ago", s / 60, s % 60),          Style::new()),
     };
-
-    let is_polling = app.polling_until.map(|t| Instant::now() < t).unwrap_or(false);
+    let is_polling = app.polling_until.map(|u| Instant::now() < u).unwrap_or(false);
     let (status_text, conn_style) = if app.is_demo {
         ("Demo".to_string(), Style::new().fg(t.status_demo))
     } else if is_polling {
@@ -281,19 +276,67 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         };
         (app.status.to_string(), style)
     };
+    let notif_icon = match app.notif_mode {
+        NotificationMode::InApp => "🔔 in_app",
+        NotificationMode::Os    => "🔔 os",
+        NotificationMode::Both  => "🔔 both",
+        NotificationMode::Off   => "🔕 off",
+    };
 
-    let right = format!("{}  ●  {}  ", timer_text, status_text);
-    let pad = (area.width as usize).saturating_sub(keys.len() + right.len());
-    let bullet_pos = right.find('●').unwrap_or(right.len());
+    // Build the right-side line and measure its display width.
+    let right_spans: Vec<Span> = vec![
+        Span::styled(format!(" {notif_icon}  "),        Style::new().fg(t.dim)),
+        Span::styled(format!("{timer_text}  ●  "),      timer_style),
+        Span::styled(format!("{status_text} "),         conn_style),
+    ];
+    let right_width = right_spans.iter().map(|s| s.content.chars().count()).sum::<usize>()
+        // each emoji renders as 2 columns; add 1 extra per emoji char
+        + right_spans.iter().flat_map(|s| s.content.chars()).filter(|c| !c.is_ascii()).count()
+        as usize;
+
+    // ── Left side (key hints, truncated to remaining space) ────────────────────
+    let hints_full = match &app.mode {
+        AppMode::Config(_)             => " ↑↓/jk navigate  │  Enter edit  │  Tab next field  │  a add  │  d delete  │  s save  │  Esc back",
+        AppMode::HeaderSelect { .. }   => " ←→/Tab col  │  Enter sort  │  ↑↓ rows  │  Esc cancel",
+        AppMode::ReorderColumns { .. } => " ←→/hl select  │  H/L move  │  Esc done",
+        AppMode::Filter                => " Type to filter  │  Enter/Esc close",
+        AppMode::Normal if app.is_demo => " ↑↓ scroll  │  Enter open  │  / filter  │  s sort  │  o reorder  │  c config  │  m notif  │  n add pr  │  q quit",
+        AppMode::Normal                => " ↑↓ scroll  │  Enter open  │  / filter  │  s sort  │  o reorder  │  c config  │  m notif  │  q quit",
+    };
+
+    let available = (area.width as usize).saturating_sub(right_width);
+    let hints = if hints_full.chars().count() <= available {
+        hints_full.to_string()
+    } else if available > 1 {
+        // Convert column count → byte offset (all chars here are 1 column wide,
+        // but some are multi-byte UTF-8, so we must use char_indices not a raw slice).
+        let byte_end = hints_full
+            .char_indices()
+            .nth(available.saturating_sub(1))
+            .map(|(i, _)| i)
+            .unwrap_or(hints_full.len());
+        let truncated = &hints_full[..byte_end];
+        // Snap back to the last " │ " so we never cut a hint label in half.
+        let boundary = truncated.rfind(" │ ").unwrap_or(truncated.len());
+        format!("{}…", &truncated[..boundary])
+    } else {
+        String::new()
+    };
+
+    // ── Layout: hints left | right status right ────────────────────────────────
+    let [left_area, right_area] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(right_width as u16),
+    ])
+    .areas(area);
 
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(keys, Style::new().fg(t.dim)),
-            Span::raw(" ".repeat(pad)),
-            Span::styled(&right[..bullet_pos], timer_style),
-            Span::styled(&right[bullet_pos..], conn_style),
-        ])),
-        area,
+        Paragraph::new(Span::styled(hints, Style::new().fg(t.dim))),
+        left_area,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(right_spans)),
+        right_area,
     );
 }
 
@@ -425,6 +468,49 @@ fn render_cfg_status(frame: &mut Frame, editor: &ConfigEditor, theme: &Theme, ar
         Style::new().fg(theme.status_ok)
     };
     frame.render_widget(Paragraph::new(Span::styled(msg, style)), area);
+}
+
+// ── Toast overlay ─────────────────────────────────────────────────────────────
+
+fn render_toasts(frame: &mut Frame, app: &App) {
+    let t = &app.theme;
+    let area = frame.area();
+    const W: u16 = 50;
+    const H: u16 = 3;
+
+    // Count bottom rows occupied by fixed bars so toasts always float above them.
+    let bottom_rows: u16 = 1  // status bar
+        + if matches!(app.mode, AppMode::Filter) || !app.filter.is_empty() { 1 } else { 0 };
+
+    for (i, toast) in app.toasts.iter().rev().take(3).enumerate() {
+        let (label, color) = match toast.kind {
+            ToastKind::New     => ("● New PR ", t.event_new),
+            ToastKind::Updated => ("◆ Updated", t.event_upd),
+            ToastKind::Closed  => ("○ Closed ", t.event_clo),
+        };
+
+        let x = area.width.saturating_sub(W + 1);
+        let y = area.height
+            .saturating_sub(bottom_rows)
+            .saturating_sub(H * (i as u16 + 1));
+
+        let toast_area = Rect { x, y, width: W, height: H };
+        frame.render_widget(Clear, toast_area);
+
+        let max_msg = W.saturating_sub(14) as usize;
+        let msg: String = toast.message.chars().take(max_msg).collect();
+
+        let content = Line::from(vec![
+            Span::styled(format!(" {label}  "), Style::new().fg(color).bold()),
+            Span::raw(msg),
+        ]);
+
+        frame.render_widget(
+            Paragraph::new(content)
+                .block(Block::new().borders(Borders::ALL).border_style(Style::new().fg(color))),
+            toast_area,
+        );
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

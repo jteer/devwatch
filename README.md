@@ -1,38 +1,49 @@
 # devwatch
 
-A cross-platform GitHub PR / VCS event monitor, written in Rust.
+A cross-platform GitHub / GitLab PR monitor with a terminal UI and a desktop GUI, written in Rust.
+
+<!-- TUI demo — regenerate with: vhs demo/tui.tape -->
+<!-- ![TUI demo](demo/tui.gif) -->
+
+<!-- Tauri desktop app screenshot -->
+<!-- ![Tauri app](demo/tauri.png) -->
+
+## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  config.toml                                                     │
-│  (repos + tokens)                                                │
-└──────────────┬───────────────────────────────────────────────────┘
+│  config.toml  ·  repos, tokens, poll interval, daemon port       │
+└──────────────────────┬───────────────────────────────────────────┘
+                       │
+                       ▼
+        ┌──────────────────────────────┐
+        │           daemon             │
+        │  ┌──────────┐  ┌──────────┐  │
+        │  │  poller  │→ │  state   │  │
+        │  │ (github/ │  │(in-mem + │  │
+        │  │  gitlab) │  │ SQLite)  │  │
+        │  └──────────┘  └──────────┘  │
+        │                              │
+        │  JSON / TCP  127.0.0.1:7878  │
+        └──────┬───────────────────────┘
                │
-               ▼
-┌──────────────────────────────────┐
-│           daemon                 │
-│  ┌──────────┐  ┌───────────────┐ │
-│  │  poller  │→ │  DaemonState  │ │   notify-rust (system tray)
-│  │(octocrab)│  │  (in-memory)  │ │ ──────────────────────────▶ 🔔
-│  └──────────┘  └───────┬───────┘ │
-│                        │ SQLite  │
-│                  state.db (disk) │
-│                                  │
-│  ┌─────────────────────────────┐ │
-│  │  JSON / TCP server          │ │ 127.0.0.1:7878
-│  │  (newline-delimited JSON)   │◀├──────────────────── clients
-│  └─────────────────────────────┘ │
-└──────────────────────────────────┘
-        ▲               ▲
-        │               │
+       ┌───────┴────────┐
+       │                │
+       ▼                ▼
   crates/tui       crates/tauri-app
-  (Phase 2)          (Phase 3)
+  Terminal UI       Desktop GUI
+  (ratatui)         (Tauri + React)
 ```
 
 ## Prerequisites
 
 - Rust stable (`rustup update stable`)
 - A GitHub [Personal Access Token](https://github.com/settings/tokens) with the `repo` scope
+
+For the desktop app only:
+
+- Node.js ≥ 18
+- `cargo tauri` CLI: `cargo install tauri-cli`
 
 ## Setup
 
@@ -58,14 +69,61 @@ A cross-platform GitHub PR / VCS event monitor, written in Rust.
 ## Build
 
 ```sh
-# Build just the daemon (fast):
-cargo build -p daemon
-
-# Build everything:
+# Build everything (daemon + TUI):
 cargo build --workspace
+
+# Build the desktop app (requires Node.js):
+cargo tauri build -p tauri-app
 ```
 
 ## Run
+
+### TUI (terminal UI)
+
+```sh
+cargo run -p tui
+```
+
+The TUI **auto-starts the daemon** if it isn't already running — no need to
+launch two terminals.  It locates the `daemon` binary as a sibling of the
+`devwatch-tui` executable, or falls back to `daemon` on `PATH`.
+
+Try it without a config using demo mode:
+```sh
+cargo run -p tui -- --demo
+```
+
+Debug logging (written to a file so it doesn't corrupt the terminal):
+```sh
+DEVWATCH_TUI_LOG=/tmp/tui.log cargo run -p tui
+```
+
+#### Key bindings
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Select next row |
+| `k` / `↑` | Select previous row |
+| `Enter` | Open PR in browser |
+| `s` | Cycle sort column |
+| `S` | Toggle sort direction |
+| `/` | Filter by text |
+| `Esc` | Clear filter / exit mode |
+| `Tab` / `→` | Enter column-select mode |
+| `o` | Enter column-reorder mode (`H`/`L` to move) |
+| `c` | Open config editor |
+| `q` | Quit |
+
+### Desktop app (Tauri)
+
+```sh
+cargo tauri dev -p tauri-app
+```
+
+This starts the Vite dev server for the React UI and the Tauri window.
+
+Demo mode is available via the flask icon in the top-right of the nav bar —
+no daemon or config needed to explore the UI.
 
 ### Daemon only
 
@@ -76,21 +134,6 @@ cargo run -p daemon
 With verbose logging:
 ```sh
 RUST_LOG=debug cargo run -p daemon
-```
-
-### TUI (terminal UI)
-
-```sh
-cargo run -p tui
-```
-
-The TUI will **auto-start the daemon** if it is not already running — no need
-to launch two terminals manually. It locates the `daemon` binary as a sibling
-of the `devwatch-tui` executable, or falls back to `daemon` on `PATH`.
-
-Debug logging (written to a file so it doesn't corrupt the terminal):
-```sh
-DEVWATCH_TUI_LOG=/tmp/tui.log cargo run -p tui
 ```
 
 ## IPC — interacting with the daemon manually
@@ -116,10 +159,10 @@ nc 127.0.0.1 7878
 
 **Client → Daemon**
 
-| Message       | Effect                                              |
-|---------------|-----------------------------------------------------|
-| `{"Ping":null}` | Responds with `{"Pong":null}`                     |
-| `{"GetState":null}` | Responds with `{"StateSnapshot": {...}}`      |
+| Message | Effect |
+|---------|--------|
+| `{"Ping":null}` | Responds with `{"Pong":null}` |
+| `{"GetState":null}` | Responds with `{"StateSnapshot": {...}}` |
 | `{"Subscribe":null}` | StateSnapshot, then streams `{"Event": ...}` |
 
 **Daemon → Client**
@@ -140,19 +183,40 @@ The daemon stores PR state in SQLite at:
 - **macOS / Linux:** `~/.local/share/devwatch/state.db`
 - **Windows:** `%LOCALAPPDATA%\devwatch\state.db`
 
-This prevents duplicate notifications across daemon restarts.
+This prevents duplicate notifications across daemon restarts.  The TUI and
+desktop app share the same database for persisted settings (column order,
+notification mode, close behaviour).
+
+## Demo recordings
+
+The TUI demo GIF is generated with [VHS](https://github.com/charmbracelet/vhs):
+
+```sh
+# Install VHS (macOS)
+brew install vhs
+
+# Re-record
+vhs demo/tui.tape
+```
+
+The tape script is at [`demo/tui.tape`](demo/tui.tape).
 
 ## Project layout
 
 ```
 crates/
 ├── core/                # Shared types, VcsProvider trait, IPC messages
-├── daemon/              # Background polling service (Phase 1 — complete)
+├── daemon/              # Background polling service
 ├── providers/
-│   ├── github/          # octocrab-based VcsProvider
-│   └── gitlab/          # stub (Phase N)
-├── tui/                 # ratatui terminal UI (Phase 2 — stub)
-└── tauri-app/           # Tauri GUI (Phase 3 — stub)
+│   ├── github/          # octocrab-based GitHub provider
+│   └── gitlab/          # GitLab provider (stub)
+├── tui/                 # ratatui terminal UI
+└── tauri-app/           # Tauri + React desktop app
+    └── ui/              # Vite + React + shadcn/ui frontend
+demo/
+└── tui.tape             # VHS script for TUI demo GIF
+examples/
+└── config.example.toml  # Starter config
 ```
 
 ## Configuration reference

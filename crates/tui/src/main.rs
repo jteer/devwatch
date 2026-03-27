@@ -32,6 +32,8 @@ async fn main() -> Result<()> {
     // ── Config ────────────────────────────────────────────────────────────────
     let (cfg, config_path) = load_cfg_with_path();
 
+    let notif_mode = settings::load_notif_mode().unwrap_or(app::NotificationMode::InApp);
+
     // ── Demo mode: skip daemon entirely ───────────────────────────────────────
     if demo_mode {
         let terminal = ratatui::init();
@@ -39,6 +41,7 @@ async fn main() -> Result<()> {
         if let Some(order) = settings::load_column_order() {
             app.column_order = order;
         }
+        app.notif_mode = app::NotificationMode::InApp; // demo always starts with toasts on
         let result = app.run(terminal).await;
         ratatui::restore();
         return result;
@@ -76,7 +79,7 @@ async fn main() -> Result<()> {
 
     // ── Run TUI ───────────────────────────────────────────────────────────────
     let terminal = ratatui::init();
-    let mut app = app::App::new(daemon_rx, conn.owned_child, cfg, config_path);
+    let mut app = app::App::new(daemon_rx, conn.owned_child, cfg, config_path, notif_mode);
     if let Some(order) = settings::load_column_order() {
         app.column_order = order;
     }
