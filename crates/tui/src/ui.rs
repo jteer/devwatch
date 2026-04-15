@@ -216,6 +216,8 @@ fn render_event_log(frame: &mut Frame, app: &App, area: Rect) {
                 ("◆", t.event_upd)
             } else if entry.message.starts_with("closed") {
                 ("○", t.event_clo)
+            } else if entry.message.starts_with("notif") {
+                ("◉", t.event_notif)
             } else {
                 ("·", t.dim)
             };
@@ -300,7 +302,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::HeaderSelect { .. }   => " ←→/Tab col  │  Enter sort  │  ↑↓ rows  │  Esc cancel",
         AppMode::ReorderColumns { .. } => " ←→/hl select  │  H/L move  │  Esc done",
         AppMode::Filter                => " Type to filter  │  Enter/Esc close",
-        AppMode::Normal if app.is_demo => " ↑↓ scroll  │  Enter open  │  / filter  │  s sort  │  o reorder  │  c config  │  m notif  │  n add pr  │  q quit",
+        AppMode::Normal if app.is_demo => " ↑↓ scroll  │  Enter open  │  / filter  │  s sort  │  o reorder  │  c config  │  m notif  │  n add event  │  q quit",
         AppMode::Normal                => " ↑↓ scroll  │  Enter open  │  / filter  │  s sort  │  o reorder  │  c config  │  m notif  │  q quit",
     };
 
@@ -484,9 +486,10 @@ fn render_toasts(frame: &mut Frame, app: &App) {
 
     for (i, toast) in app.toasts.iter().rev().take(3).enumerate() {
         let (label, color) = match toast.kind {
-            ToastKind::New     => ("● New PR ", t.event_new),
-            ToastKind::Updated => ("◆ Updated", t.event_upd),
-            ToastKind::Closed  => ("○ Closed ", t.event_clo),
+            ToastKind::New          => ("● New PR ", t.event_new),
+            ToastKind::Updated      => ("◆ Updated", t.event_upd),
+            ToastKind::Closed       => ("○ Closed ", t.event_clo),
+            ToastKind::Notification => ("◉ Notif  ", t.event_notif),
         };
 
         let x = area.width.saturating_sub(W + 1);

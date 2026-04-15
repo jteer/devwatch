@@ -1,38 +1,44 @@
 import { useState, useMemo, useCallback } from 'react'
-import { LayoutDashboard, Settings as SettingsIcon, FlaskConical } from 'lucide-react'
+import { GitPullRequest, Bell, Settings as SettingsIcon, FlaskConical } from 'lucide-react'
 import { Toaster } from 'sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import Dashboard from '@/pages/Dashboard'
+import PullRequests from '@/pages/PullRequests'
+import Notifications from '@/pages/Dashboard'
 import Settings from '@/pages/Settings'
 import { useDaemon } from '@/hooks/useDaemon'
 import { useDemoData } from '@/hooks/useDemoData'
-import { useNotifications, notify } from '@/hooks/useNotifications'
+import { useNotifications, notify, reasonLabel } from '@/hooks/useNotifications'
 import type { NotificationMode } from '@/types'
 
-type Page = 'dashboard' | 'settings'
+type Page = 'prs' | 'notifications' | 'settings'
 
 export default function App() {
-  const [page, setPage]                   = useState<Page>('dashboard')
+  const [page, setPage]                   = useState<Page>('prs')
   const [isDemo, setIsDemo]               = useState(false)
   const [notifMode, setNotifMode]         = useState<NotificationMode>('in_app')
   const daemon   = useDaemon()
   const demoData = useDemoData()
-  useNotifications(notifMode, isDemo)
+  useNotifications(notifMode, isDemo, daemon.settled)
 
-  // Fire a notification when a demo PR is manually added
+  // Fire a notification when a demo event is manually added
   const handleAddDemo = useCallback(() => {
-    const pr = demoData.addPr()
-    notify(notifMode, 'New pull request', `${pr.repo} — ${pr.title} by ${pr.author}`)
+    const item = demoData.addItem()
+    if (item.kind === 'pr') {
+      notify(notifMode, 'New pull request', `${item.pr.repo} — ${item.pr.title} by ${item.pr.author}`)
+    } else {
+      const n = item.notification
+      notify(notifMode, reasonLabel(n.reason), `${n.repo} — ${n.subject_title}`)
+    }
   }, [demoData, notifMode])
 
-  // When demo is active, swap out prs and silence openPr
+  // When demo is active, swap out prs/events and silence openPr
   const noOpOpen = useCallback(() => {}, [])
   const activeDaemon = useMemo(() => {
     if (!isDemo) return daemon
-    return { ...daemon, prs: demoData.prs, openPr: noOpOpen }
-  }, [isDemo, daemon, demoData.prs, noOpOpen])
+    return { ...daemon, prs: demoData.prs, events: demoData.events, openPr: noOpOpen }
+  }, [isDemo, daemon, demoData.prs, demoData.events, noOpOpen])
 
   return (
     <TooltipProvider>
@@ -54,12 +60,20 @@ export default function App() {
           </div>
           <nav className="flex items-center gap-1">
             <Button
-              variant={page === 'dashboard' ? 'secondary' : 'ghost'}
+              variant={page === 'prs' ? 'secondary' : 'ghost'}
               size="sm"
-              onClick={() => setPage('dashboard')}
+              onClick={() => setPage('prs')}
             >
-              <LayoutDashboard className="h-4 w-4 mr-1.5" />
-              Dashboard
+              <GitPullRequest className="h-4 w-4 mr-1.5" />
+              Pull Requests
+            </Button>
+            <Button
+              variant={page === 'notifications' ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => setPage('notifications')}
+            >
+              <Bell className="h-4 w-4 mr-1.5" />
+              Notifications
             </Button>
             <Button
               variant={page === 'settings' ? 'secondary' : 'ghost'}
@@ -84,8 +98,14 @@ export default function App() {
 
         {/* Page content */}
         <main className="flex-1 overflow-hidden">
-          {page === 'dashboard'
-            ? <Dashboard
+          {page === 'prs'
+            ? <PullRequests
+                daemon={activeDaemon}
+                isDemo={isDemo}
+                onAddDemo={isDemo ? handleAddDemo : undefined}
+              />
+            : page === 'notifications'
+            ? <Notifications
                 daemon={activeDaemon}
                 isDemo={isDemo}
                 onAddDemo={isDemo ? handleAddDemo : undefined}

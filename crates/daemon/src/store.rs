@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use devwatch_core::types::{PullRequest, VcsEvent};
+use devwatch_core::types::{Notification, PullRequest, VcsEvent};
 
 pub struct Store {
     conn: Connection,
@@ -51,6 +51,19 @@ impl Store {
                 repo        TEXT    NOT NULL,
                 pr_number   INTEGER NOT NULL,
                 occurred_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS notifications (
+                id            TEXT    PRIMARY KEY,
+                repo          TEXT    NOT NULL DEFAULT '',
+                subject_type  TEXT    NOT NULL DEFAULT '',
+                subject_title TEXT    NOT NULL DEFAULT '',
+                reason        TEXT    NOT NULL DEFAULT '',
+                url           TEXT    NOT NULL DEFAULT '',
+                updated_at    INTEGER NOT NULL DEFAULT 0,
+                seen          INTEGER NOT NULL DEFAULT 0,
+                hidden        INTEGER NOT NULL DEFAULT 0,
+                first_seen_at INTEGER NOT NULL DEFAULT 0
             );",
         )?;
 
@@ -60,6 +73,7 @@ impl Store {
             "ALTER TABLE pull_requests ADD COLUMN draft      INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE pull_requests ADD COLUMN reviewers  TEXT    NOT NULL DEFAULT ''",
             "ALTER TABLE pull_requests ADD COLUMN assignees  TEXT    NOT NULL DEFAULT ''",
+            "ALTER TABLE events ADD COLUMN subject TEXT",
         ] {
             match self.conn.execute_batch(sql) {
                 Ok(_) => {}
@@ -139,10 +153,11 @@ impl Store {
 
     pub fn record_event(&self, event: &VcsEvent) -> Result<()> {
         let now = unix_now();
-        let (event_type, provider, repo, number) = match event {
-            VcsEvent::NewPullRequest(pr) => ("new", &pr.provider, &pr.repo, pr.number),
-            VcsEvent::PullRequestUpdated { new, .. } => ("updated", &new.provider, &new.repo, new.number),
-            VcsEvent::PullRequestClosed(pr) => ("closed", &pr.provider, &pr.repo, pr.number),
+        let (event_type, provider, repo, number): (&str, &str, &str, u64) = match event {
+            VcsEvent::NewPullRequest(pr)          => ("new",          pr.provider.as_str(), pr.repo.as_str(), pr.number),
+            VcsEvent::PullRequestUpdated { new, .. } => ("updated",   new.provider.as_str(), new.repo.as_str(), new.number),
+            VcsEvent::PullRequestClosed(pr)       => ("closed",       pr.provider.as_str(), pr.repo.as_str(), pr.number),
+            VcsEvent::Notification(_)             => return Ok(()), // handled by upsert_notification
         };
         self.conn.execute(
             "INSERT INTO events (event_type, provider, repo, pr_number, occurred_at)
@@ -150,6 +165,36 @@ impl Store {
             params![event_type, provider, repo, number, now],
         )?;
         Ok(())
+    }
+
+    /// Insert or update a notification, preserving existing `seen`/`hidden` values.
+    pub fn upsert_notification(&self, n: &Notification) -> Result<()> {
+        let now = unix_now();
+        self.conn.execute(
+            "INSERT INTO notifications
+                (id, repo, subject_type, subject_title, reason, url, updated_at, seen, hidden, first_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                repo          = excluded.repo,
+                subject_type  = excluded.subject_type,
+                subject_title = excluded.subject_title,
+                reason        = excluded.reason,
+                url           = excluded.url,
+                updated_at    = excluded.updated_at",
+            params![n.id, n.repo, n.subject_type, n.subject_title, n.reason, n.url,
+                    n.updated_at as i64, now],
+        )?;
+        Ok(())
+    }
+
+    /// Return all known notification IDs — used to seed the dedup set on startup.
+    pub fn load_notification_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM notifications")?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
     }
 }
 

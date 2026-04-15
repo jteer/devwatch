@@ -1,11 +1,50 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use devwatch_core::{
     config::RepoConfig,
     provider::VcsProvider,
-    types::PullRequest,
+    types::{Notification, PullRequest},
 };
 use tracing::debug;
+
+// ── GitHub Notifications API response shapes ──────────────────────────────────
+
+#[derive(Deserialize)]
+struct GhNotif {
+    id: String,
+    repository: GhRepo,
+    subject: GhSubject,
+    reason: String,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Deserialize)]
+struct GhRepo {
+    full_name: String,
+}
+
+#[derive(Deserialize)]
+struct GhSubject {
+    title: String,
+    url: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+/// Convert a GitHub API URL to a browser-accessible HTML URL.
+///
+/// Examples:
+///   `https://api.github.com/repos/owner/repo/pulls/123`
+///     → `https://github.com/owner/repo/pull/123`
+///   `https://api.github.com/repos/owner/repo/issues/456`
+///     → `https://github.com/owner/repo/issues/456`
+fn api_url_to_html(api_url: &str) -> String {
+    api_url
+        .replace("api.github.com/repos/", "github.com/")
+        .replace("/pulls/", "/pull/")
+}
 
 pub struct GithubProvider {
     client: octocrab::Octocrab,
@@ -81,6 +120,43 @@ impl VcsProvider for GithubProvider {
 
     fn provider_name(&self) -> &str {
         "github"
+    }
+
+    async fn get_notifications(&self) -> Result<Vec<Notification>> {
+        debug!("polling GitHub notifications");
+
+        let mut raw: Vec<GhNotif> = Vec::new();
+        let mut page_num = 1u32;
+        loop {
+            let page_str = page_num.to_string();
+            let batch: Vec<GhNotif> = self
+                .client
+                .get("/notifications", Some(&[("per_page", "100"), ("page", page_str.as_str())]))
+                .await
+                .map_err(|e| anyhow!("GitHub notifications API error (page {page_num}): {e}"))?;
+            let done = batch.len() < 100;
+            raw.extend(batch);
+            if done { break; }
+            page_num += 1;
+        }
+        debug!("fetched {} notifications across {} page(s)", raw.len(), page_num);
+
+        let notifs = raw
+            .into_iter()
+            .map(|n| Notification {
+                id:            n.id,
+                repo:          n.repository.full_name,
+                subject_type:  n.subject.kind,
+                subject_title: n.subject.title,
+                reason:        n.reason,
+                url:           api_url_to_html(&n.subject.url),
+                updated_at:    n.updated_at.timestamp().max(0) as u64,
+                seen:          false,
+                hidden:        false,
+            })
+            .collect();
+
+        Ok(notifs)
     }
 }
 

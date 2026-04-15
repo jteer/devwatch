@@ -49,14 +49,21 @@ async fn main() -> Result<()> {
     let seed_prs = store.load_prs()?;
     info!(loaded = seed_prs.len(), "seeded state from DB");
 
+    let notification_ids = store.load_notification_ids()?;
+    info!(loaded = notification_ids.len(), "seeded notification dedup from DB");
     let store = Arc::new(Mutex::new(store));
 
     // ── State ─────────────────────────────────────────────────────────────────
-    let daemon_state = Arc::new(Mutex::new(DaemonState::from_prs(seed_prs)));
+    let daemon_state = Arc::new(Mutex::new(
+        DaemonState::from_prs(seed_prs).with_known_notification_ids(notification_ids),
+    ));
 
     // ── Providers ─────────────────────────────────────────────────────────────
     let entries: Vec<ProviderEntry> = build_provider_entries(&cfg)?;
     let entries = Arc::new(entries);
+
+    let notif_providers: Vec<Arc<dyn VcsProvider>> = build_notification_providers(&cfg)?;
+    let notif_providers = Arc::new(notif_providers);
 
     // ── Broadcast channel ─────────────────────────────────────────────────────
     // Capacity: hold up to 256 events before slow receivers lag.
@@ -67,14 +74,15 @@ async fn main() -> Result<()> {
 
     // ── Spawn tasks ───────────────────────────────────────────────────────────
     let poller_handle = {
-        let entries  = Arc::clone(&entries);
-        let state    = Arc::clone(&daemon_state);
-        let store    = Arc::clone(&store);
-        let tx       = event_tx.clone();
-        let cancel   = cancel.clone();
-        let interval = cfg.poll_interval_secs;
+        let entries         = Arc::clone(&entries);
+        let notif_providers = Arc::clone(&notif_providers);
+        let state           = Arc::clone(&daemon_state);
+        let store           = Arc::clone(&store);
+        let tx              = event_tx.clone();
+        let cancel          = cancel.clone();
+        let interval        = cfg.poll_interval_secs;
         tokio::spawn(async move {
-            poller::poll_loop(entries, state, store, tx, interval, cancel).await;
+            poller::poll_loop(entries, notif_providers, state, store, tx, interval, cancel).await;
         })
     };
 
@@ -106,6 +114,35 @@ async fn main() -> Result<()> {
     let _ = tokio::join!(poller_handle, notifier_handle, server_handle);
     info!("devwatch daemon stopped");
     Ok(())
+}
+
+/// Build one notification-capable provider per unique GitHub token.
+/// Deduplicates so the Notifications API is only called once per account per poll.
+fn build_notification_providers(cfg: &AppConfig) -> Result<Vec<Arc<dyn VcsProvider>>> {
+    let mut seen_tokens: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut providers: Vec<Arc<dyn VcsProvider>> = Vec::new();
+
+    for repo in &cfg.repos {
+        if repo.provider != "github" {
+            continue;
+        }
+        let token = repo
+            .token
+            .clone()
+            .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+            .unwrap_or_default();
+        if token.is_empty() {
+            continue;
+        }
+        if seen_tokens.insert(token.clone()) {
+            match provider_github::GithubProvider::new(token) {
+                Ok(p) => providers.push(Arc::new(p)),
+                Err(e) => tracing::warn!("failed to build notification provider: {e}"),
+            }
+        }
+    }
+
+    Ok(providers)
 }
 
 fn build_provider_entries(cfg: &AppConfig) -> Result<Vec<ProviderEntry>> {

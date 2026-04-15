@@ -8,7 +8,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 use devwatch_core::config::AppConfig;
-use devwatch_core::types::PullRequest;
+use devwatch_core::types::{Notification, PullRequest};
 
 // ── State types ───────────────────────────────────────────────────────────────
 
@@ -118,6 +118,83 @@ fn save_app_settings(settings: AppSettings, state: State<'_, Mutex<AppSettings>>
     Ok(())
 }
 
+// ── Notification commands ──────────────────────────────────────────────────────
+
+fn open_notifications_db() -> anyhow::Result<rusqlite::Connection> {
+    let path = settings_db_path()
+        .ok_or_else(|| anyhow::anyhow!("cannot determine local data directory"))?;
+    if !path.exists() {
+        return Err(anyhow::anyhow!("DB not yet created"));
+    }
+    let conn = rusqlite::Connection::open(&path)?;
+    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    Ok(conn)
+}
+
+#[tauri::command]
+fn list_notifications() -> Vec<Notification> {
+    let Ok(conn) = open_notifications_db() else { return Vec::new() };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, repo, subject_type, subject_title, reason, url, updated_at, seen, hidden
+         FROM notifications
+         ORDER BY updated_at DESC
+         LIMIT 500",
+    ) else { return Vec::new() };
+    stmt.query_map([], |row| {
+        Ok(Notification {
+            id:            row.get(0)?,
+            repo:          row.get(1)?,
+            subject_type:  row.get(2)?,
+            subject_title: row.get(3)?,
+            reason:        row.get(4)?,
+            url:           row.get(5)?,
+            updated_at:    row.get::<_, i64>(6).map(|v| v.max(0) as u64).unwrap_or(0),
+            seen:          row.get::<_, i32>(7).map(|v| v != 0).unwrap_or(false),
+            hidden:        row.get::<_, i32>(8).map(|v| v != 0).unwrap_or(false),
+        })
+    })
+    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+    .unwrap_or_default()
+}
+
+#[tauri::command]
+fn mark_notification_seen(id: String, seen: bool) -> Result<(), String> {
+    let conn = open_notifications_db().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE notifications SET seen = ?1 WHERE id = ?2",
+        rusqlite::params![seen as i32, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn mark_all_notifications_seen() -> Result<(), String> {
+    let conn = open_notifications_db().map_err(|e| e.to_string())?;
+    conn.execute("UPDATE notifications SET seen = 1 WHERE hidden = 0", [])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_notification(id: String) -> Result<(), String> {
+    let conn = open_notifications_db().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE notifications SET hidden = 1, seen = 1 WHERE id = ?1",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn unhide_notification(id: String) -> Result<(), String> {
+    let conn = open_notifications_db().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE notifications SET hidden = 0 WHERE id = ?1",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
@@ -135,6 +212,11 @@ fn main() {
             save_config,
             get_app_settings,
             save_app_settings,
+            list_notifications,
+            mark_notification_seen,
+            mark_all_notifications_seen,
+            hide_notification,
+            unhide_notification,
         ])
         .setup(|app| {
             let quit   = MenuItem::with_id(app, "quit",   "Quit devwatch",  true, None::<&str>)?;

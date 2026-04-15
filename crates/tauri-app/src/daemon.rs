@@ -84,6 +84,9 @@ fn handle_msg(app: &AppHandle, msg: DaemonMessage) {
                     VcsEvent::PullRequestClosed(pr) => {
                         s.prs.retain(|p| !(p.number == pr.number && p.repo == pr.repo));
                     }
+                    VcsEvent::Notification(_) => {
+                        s.unread += 1;
+                    }
                 }
                 let _ = app.emit("pr-snapshot", s.prs.clone());
                 let _ = app.emit("unread-count", s.unread);
