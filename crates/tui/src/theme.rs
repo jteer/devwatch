@@ -22,6 +22,7 @@ pub struct Theme {
     pub event_new:     Color, // ● new PR
     pub event_upd:     Color, // ◆ updated PR
     pub event_clo:     Color, // ○ closed PR
+    pub event_notif:   Color, // ◉ GitHub notification
 
     // Status bar
     pub status_ok:     Color, // Connected / polling done
@@ -47,6 +48,7 @@ impl Theme {
             event_new:    Color::Green,
             event_upd:    Color::Yellow,
             event_clo:    Color::Red,
+            event_notif:  Color::Cyan,
 
             status_ok:    Color::Green,
             status_warn:  Color::Yellow,
@@ -71,6 +73,7 @@ impl Theme {
             event_new:    Color::Green,
             event_upd:    Color::Yellow,
             event_clo:    Color::Red,
+            event_notif:  Color::Blue,
 
             status_ok:    Color::Green,
             status_warn:  Color::Yellow,
@@ -95,6 +98,7 @@ impl Theme {
             event_new:    Color::Green,
             event_upd:    Color::Yellow,
             event_clo:    Color::Red,
+            event_notif:  Color::Cyan,
 
             status_ok:    Color::Green,
             status_warn:  Color::Yellow,

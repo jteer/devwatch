@@ -46,6 +46,17 @@ fn send_notification(event: &VcsEvent) {
             format!("PR closed: {}", pr.title),
             format!("#{} in {}", pr.number, pr.repo),
         ),
+        VcsEvent::Notification(n) => {
+            let summary = match n.reason.as_str() {
+                "comment"          => format!("New comment: {}", n.subject_title),
+                "mention"          => format!("Mentioned: {}", n.subject_title),
+                "review_requested" => format!("Review requested: {}", n.subject_title),
+                "ci_activity"      => format!("CI update: {}", n.subject_title),
+                "assign"           => format!("Assigned: {}", n.subject_title),
+                _                  => format!("GitHub: {}", n.subject_title),
+            };
+            (summary, n.repo.clone())
+        }
     };
 
     if let Err(e) = notify_rust::Notification::new()

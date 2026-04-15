@@ -26,6 +26,18 @@ export interface AppConfig {
   theme: string
 }
 
+export interface GithubNotification {
+  id: string
+  repo: string
+  subject_type: string
+  subject_title: string
+  reason: string
+  url: string
+  updated_at: number
+  seen: boolean
+  hidden: boolean
+}
+
 export type NotificationMode = 'in_app' | 'os' | 'both' | 'off'
 
 export interface AppSettings {

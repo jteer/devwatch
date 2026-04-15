@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 
 use devwatch_core::config::AppConfig;
 use devwatch_core::ipc::DaemonMessage;
-use devwatch_core::types::{PullRequest, VcsEvent};
+use devwatch_core::types::{Notification, PullRequest, VcsEvent};
 use tokio::process::Child;
 
 use crate::config_editor::{ConfigAction, ConfigEditor};
@@ -110,7 +110,7 @@ impl NotificationMode {
 const TOAST_TTL: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone)]
-pub enum ToastKind { New, Updated, Closed }
+pub enum ToastKind { New, Updated, Closed, Notification }
 
 #[derive(Debug, Clone)]
 pub struct Toast {
@@ -239,11 +239,14 @@ impl App {
             let sc = s % 60;
             format!("{h:02}:{m:02}:{sc:02}")
         };
-        log.push_back(LogEntry { timestamp: t(3),   message: "new  PR #16 Add structured logging with tracing crate  [owner/backend]".into() });
-        log.push_back(LogEntry { timestamp: t(10),  message: "new  PR #13 Fix mobile layout on small screens  [owner/frontend]".into() });
-        log.push_back(LogEntry { timestamp: t(25),  message: "upd  PR #4 Update rate limiting middleware  [owner/api]".into() });
-        log.push_back(LogEntry { timestamp: t(60),  message: "closed PR #0 Remove legacy auth flow  [owner/backend]".into() });
         log.push_back(LogEntry { timestamp: t(120), message: "snapshot: 16 open PRs".into() });
+        log.push_back(LogEntry { timestamp: t(60),  message: "closed PR #0 Remove legacy auth flow  [owner/backend]".into() });
+        log.push_back(LogEntry { timestamp: t(50),  message: "notif [review] PullRequest — Fix memory leak in connection pool  [owner/backend]".into() });
+        log.push_back(LogEntry { timestamp: t(25),  message: "upd  PR #4 Update rate limiting middleware  [owner/api]".into() });
+        log.push_back(LogEntry { timestamp: t(18),  message: "notif [mention] Issue — Performance degradation under load  [owner/infra]".into() });
+        log.push_back(LogEntry { timestamp: t(10),  message: "new  PR #13 Fix mobile layout on small screens  [owner/frontend]".into() });
+        log.push_back(LogEntry { timestamp: t(5),   message: "notif [CI] CheckSuite — build / test (push)  [owner/frontend]".into() });
+        log.push_back(LogEntry { timestamp: t(3),   message: "new  PR #16 Add structured logging with tracing crate  [owner/backend]".into() });
 
         let theme = Theme::from_name(&config.theme);
         let mut app = Self {
@@ -492,7 +495,7 @@ impl App {
                 self.mode = AppMode::Config(editor);
             }
             KeyCode::Char('n') if self.is_demo => {
-                self.add_demo_pr();
+                self.add_demo_item();
             }
             KeyCode::Char('m') => {
                 self.notif_mode = self.notif_mode.next();
@@ -578,6 +581,21 @@ impl App {
                 self.prs.retain(|p| !(p.number == pr.number && p.repo == pr.repo));
                 self.clamp_selection();
             }
+            VcsEvent::Notification(n) => {
+                let reason_label = match n.reason.as_str() {
+                    "comment"          => "comment",
+                    "mention"          => "mention",
+                    "review_requested" => "review",
+                    "ci_activity"      => "CI",
+                    "assign"           => "assigned",
+                    _                  => "notif",
+                };
+                self.push_log(format!(
+                    "notif [{}] {} — {}  [{}]",
+                    reason_label, n.subject_type, n.subject_title, n.repo
+                ));
+                self.notify(ToastKind::Notification, n.subject_title.clone(), &n.repo);
+            }
         }
     }
 
@@ -587,9 +605,10 @@ impl App {
         }
         if matches!(self.notif_mode, NotificationMode::Os | NotificationMode::Both) {
             let title = match kind {
-                ToastKind::New     => "New Pull Request",
-                ToastKind::Updated => "Pull Request Updated",
-                ToastKind::Closed  => "Pull Request Closed",
+                ToastKind::New          => "New Pull Request",
+                ToastKind::Updated      => "Pull Request Updated",
+                ToastKind::Closed       => "Pull Request Closed",
+                ToastKind::Notification => "GitHub Notification",
             };
             let body = format!("{message}  [{repo}]");
             let _ = notify_rust::Notification::new().summary(title).body(&body).show();
@@ -638,15 +657,25 @@ impl App {
     }
 }
 
-// ── Demo: add a fake PR ───────────────────────────────────────────────────────
+// ── Demo: add a fake event (PR or notification) ───────────────────────────────
 
 impl App {
-    pub fn add_demo_pr(&mut self) {
+    /// Randomly adds either a new demo PR or a demo notification event.
+    /// Uses a mix of the current timestamp and log length for variety.
+    pub fn add_demo_item(&mut self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
+        if (now as usize + self.log.len()) % 3 == 0 {
+            self.add_demo_notification(now);
+        } else {
+            self.add_demo_pr_inner(now);
+        }
+    }
+
+    fn add_demo_pr_inner(&mut self, now: u64) {
         static TITLES: &[&str] = &[
             "Fix race condition in auth middleware",
             "Add pagination to search results",
@@ -684,6 +713,39 @@ impl App {
         if self.table_state.selected().is_none() {
             self.table_state.select(Some(0));
         }
+    }
+
+    fn add_demo_notification(&mut self, now: u64) {
+        // (reason, subject_type, subject_title)
+        static ENTRIES: &[(&str, &str, &str)] = &[
+            ("comment",          "PullRequest", "Fix memory leak in connection pool"),
+            ("mention",          "Issue",       "Performance degradation under high load"),
+            ("review_requested", "PullRequest", "Migrate CI to GitHub Actions"),
+            ("ci_activity",      "CheckSuite",  "build / test (push)"),
+            ("assign",           "PullRequest", "Update rate limiting middleware"),
+            ("comment",          "Issue",       "Webhook delivery failures since deploy"),
+            ("mention",          "PullRequest", "Add OpenAPI spec for /v2 routes"),
+            ("ci_activity",      "CheckSuite",  "deploy / staging (push)"),
+        ];
+        static REPOS: &[&str] = &["owner/frontend", "owner/backend", "owner/api", "owner/infra"];
+
+        let idx = now as usize + self.log.len();
+        let (reason, subject_type, subject_title) = ENTRIES[idx % ENTRIES.len()];
+        let repo = REPOS[idx % REPOS.len()];
+
+        let notif = Notification {
+            id:            format!("demo-{now}-{}", self.log.len()),
+            repo:          repo.to_string(),
+            subject_type:  subject_type.to_string(),
+            subject_title: subject_title.to_string(),
+            reason:        reason.to_string(),
+            url:           String::new(),
+            updated_at:    now,
+            seen:          false,
+            hidden:        false,
+        };
+
+        self.handle_vcs_event(VcsEvent::Notification(notif));
     }
 }
 
